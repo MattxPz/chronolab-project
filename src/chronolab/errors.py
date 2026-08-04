@@ -14,6 +14,7 @@ __all__ = [
     "PerfectForesightWarning",
     "SchemaVersionError",
     "SourceUnavailable",
+    "StaleCacheWarning",
     "VintageNotSupported",
     "WindowValidationError",
 ]
@@ -106,6 +107,16 @@ class SchemaVersionError(ChronolabError):
 # --------------------------------------------------------------------------- #
 # Avisos
 # --------------------------------------------------------------------------- #
+
+
+class StaleCacheWarning(UserWarning):
+    """`CachedSource` esta sirviendo una version obsoleta de la cache.
+
+    Se emite cuando la fuente remota no responde (`SourceUnavailable`) y existe
+    una entrada de cache anterior a la ventana de frescura configurada. Servir
+    la version obsoleta es preferible a fallar, pero debe quedar visible: el
+    llamante decide si eso es aceptable para su caso de uso.
+    """
 
 
 class PerfectForesightWarning(UserWarning):
