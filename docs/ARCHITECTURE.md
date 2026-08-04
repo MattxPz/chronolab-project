@@ -197,22 +197,25 @@ Las dos prohibiciones que importan y por qué:
 from enum import StrEnum
 from typing import Literal, NewType
 
-RunId     = NewType("RunId", str)      # ULID, ordenable por tiempo
+RunId = NewType("RunId", str)  # ULID, ordenable por tiempo
 DatasetId = NewType("DatasetId", str)
-ModelId   = NewType("ModelId", str)
-DetectorId= NewType("DetectorId", str)
-SeriesId  = NewType("SeriesId", str)
+ModelId = NewType("ModelId", str)
+DetectorId = NewType("DetectorId", str)
+SeriesId = NewType("SeriesId", str)
+
 
 class Role(StrEnum):
-    TARGET      = "target"
-    FUTR_EXOG   = "futr_exog"    # conocida a futuro en el instante de predecir
-    HIST_EXOG   = "hist_exog"    # solo conocida hasta el cutoff
+    TARGET = "target"
+    FUTR_EXOG = "futr_exog"  # conocida a futuro en el instante de predecir
+    HIST_EXOG = "hist_exog"  # solo conocida hasta el cutoff
     STATIC_EXOG = "static_exog"  # constante por serie
 
+
 class Vintage(StrEnum):
-    REALIZED           = "realized"            # valor observado a posteriori: presciencia perfecta
-    ARCHIVED_FORECAST  = "archived_forecast"   # la previsión que realmente existía en el cutoff
+    REALIZED = "realized"  # valor observado a posteriori: presciencia perfecta
+    ARCHIVED_FORECAST = "archived_forecast"  # la previsión que realmente existía en el cutoff
     SIMULATED_FORECAST = "simulated_forecast"  # realizado + error sintético calibrado por lead
+
 
 Stage = Literal["dev", "holdout"]
 ```
@@ -221,6 +224,7 @@ Stage = Literal["dev", "holdout"]
 # src/chronolab/panel.py
 from dataclasses import dataclass
 import pandas as pd
+
 
 @dataclass(frozen=True, slots=True)
 class PanelSpec:
@@ -245,6 +249,7 @@ class PanelSpec:
         Zona horaria en la que se presentan los datos al usuario. **No** afecta al
         almacenamiento, que siempre es UTC ingenuo.
     """
+
     dataset_id: DatasetId
     freq: str
     seasonalities: tuple[int, ...]
@@ -275,17 +280,21 @@ class Panel:
     volver a comprobarlos; ningún productor puede saltárselos, porque el único
     constructor público es :func:`chronolab.data.assemble.build_panel`.
     """
-    df: pd.DataFrame                  # largo: unique_id, ds, *value_columns
+
+    df: pd.DataFrame  # largo: unique_id, ds, *value_columns
     spec: PanelSpec
-    static: pd.DataFrame | None = None   # unique_id, *static_exog  (una fila por serie)
+    static: pd.DataFrame | None = None  # unique_id, *static_exog  (una fila por serie)
 
     def ids(self) -> tuple[SeriesId, ...]: ...
     def slice(self, start: pd.Timestamp, end: pd.Timestamp) -> "Panel":
         """Sub-panel con ``start <= ds <= end``. Conserva spec y static."""
+
     def train(self, window: "Window") -> "Panel":
         """Rebanada de entrenamiento: ``window.train_start <= ds <= window.cutoff``."""
+
     def actuals(self, window: "Window") -> pd.DataFrame:
         """unique_id, ds, y para el tramo de evaluación de la ventana."""
+
     def to_nixtla(self) -> pd.DataFrame:
         """Vista en el dialecto exacto que esperan statsforecast/mlforecast/neuralforecast."""
 ```
@@ -422,6 +431,7 @@ class FutrFrame:
 
     Solo lo construye un :class:`FutrProvider`. No hay constructor público.
     """
+
     df: pd.DataFrame
     window: "Window"
     vintage: Vintage
@@ -584,6 +594,7 @@ class SourceSpec:
         Texto libre que documenta qué representa ``unique_id`` en esta fuente
         (cliente, zona de mercado, símbolo…). Va al model card del dataset.
     """
+
     source_id: str
     role: Role
     value_columns: tuple[str, ...]
@@ -702,14 +713,15 @@ class ModelRequirements:
     reajustarlo y qué ventanas saltarse. Un modelo que declara mal sus requisitos
     falla rápido y ruidosamente en la primera ventana, no en silencio.
     """
-    needs_futr_exog: bool = False      # si True y no hay FutrProvider, el run aborta
+
+    needs_futr_exog: bool = False  # si True y no hay FutrProvider, el run aborta
     uses_hist_exog: bool = False
     uses_static_exog: bool = False
-    supports_quantiles: bool = False   # si False, las columnas q_* se escriben como NaN
-    supports_recursive: bool = False   # admite features con max_lead < L vía recursión
-    min_context: int = 1               # pasos mínimos de train; ventanas cortas se saltan
-    handles_nan_target: bool = False   # si False, el adaptador imputa dentro de fit
-    is_zero_shot: bool = False         # aparece marcado como tal en el leaderboard
+    supports_quantiles: bool = False  # si False, las columnas q_* se escriben como NaN
+    supports_recursive: bool = False  # admite features con max_lead < L vía recursión
+    min_context: int = 1  # pasos mínimos de train; ventanas cortas se saltan
+    handles_nan_target: bool = False  # si False, el adaptador imputa dentro de fit
+    is_zero_shot: bool = False  # aparece marcado como tal en el leaderboard
     refit_cost: Literal["free", "cheap", "expensive"] = "cheap"
 
 
@@ -869,6 +881,7 @@ class ScoringFrame:
     start, end
         Extremos inclusivos del tramo cubierto.
     """
+
     df: pd.DataFrame
     spec: PanelSpec
     model_id: ModelId | None
@@ -878,9 +891,9 @@ class ScoringFrame:
 
 @dataclass(frozen=True, slots=True)
 class DetectorRequirements:
-    needs_forecast: bool = False    # requiere y_hat no nulo
-    needs_quantiles: bool = False   # requiere columnas q_* no nulas
-    window: int = 1                 # puntos de contexto por score; determina el warm-up
+    needs_forecast: bool = False  # requiere y_hat no nulo
+    needs_quantiles: bool = False  # requiere columnas q_* no nulas
+    window: int = 1  # puntos de contexto por score; determina el warm-up
     needs_calibration: bool = True  # False para métodos sin ajuste (MatrixProfile)
     fit_cost: Literal["free", "cheap", "expensive"] = "cheap"
 
@@ -1000,6 +1013,7 @@ class Window:
     h, gap
         Horizonte y separación en pasos.
     """
+
     window_id: int
     stage: Stage
     train_start: pd.Timestamp
