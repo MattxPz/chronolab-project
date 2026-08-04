@@ -15,8 +15,12 @@ dist/
 .eggs/
 
 # Data and experiment artifacts
-data/
-!data/.gitkeep
+# El contenido de data/ se ignora, pero los .gitkeep se versionan para que la
+# estructura exista en un clon limpio. `data/` a secas no serviria: git no
+# desciende en un directorio excluido, asi que la reinclusion no llegaria.
+data/**
+!data/**/
+!data/**/.gitkeep
 mlruns/
 *.parquet
 !reports/**/*.parquet

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "0"
+
+jobs:
+  quality:
+    name: lint · typecheck · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      # Solo core + dev: es cuanto hace falta para lint, typecheck y tests del
+      # nucleo, y mantiene el job por debajo del minuto de instalacion.
+      # Los extras ml/deep se ejercitan en el job `smoke`.
+      - name: Install core + dev
+        run: uv sync
+
+      - name: Lint (ruff check)
+        run: uv run ruff check --output-format=github .
+
+      - name: Format (ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: Typecheck (mypy --strict sobre src/)
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest --cov --cov-report=term-missing
+
+  artifact-size:
+    name: tamaño de reports/
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guardarrail de docs/ARCHITECTURE.md §7.6: los artefactos demo van
+      # versionados, y sin tope el repo engorda hasta romper el despliegue.
+      - name: reports/ debe pesar menos de 50 MB
+        run: |
+          size_kb=$(du -sk reports | cut -f1)
+          echo "reports/ = ${size_kb} KB"
+          if [ "$size_kb" -gt 51200 ]; then
+            echo "::error::reports/ supera los 50 MB (${size_kb} KB)"
+            exit 1
+          fi

@@ -1,0 +1,190 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chronolab"
+version = "0.1.0"
+description = "Plataforma de forecasting y deteccion de anomalias en series temporales"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Mateo Paez" }]
+keywords = ["forecasting", "time-series", "anomaly-detection", "backtesting"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+# ---------------------------------------------------------------------------
+# core: lo minimo para construir un Panel, partir ventanas, calcular metricas y
+# leer/escribir artefactos. `uv sync` sin extras instala solo esto (+ dev) y
+# debe bastar para lint, typecheck y tests. Ver docs/ARCHITECTURE.md D20.
+# ---------------------------------------------------------------------------
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pandera>=0.20",
+    "pyarrow>=16.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-ulid>=2.2",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Modelos estadisticos y de machine learning + detectores clasicos de anomalias.
+ml = [
+    "lightgbm>=4.3",
+    "mlforecast>=0.13",
+    "optuna>=3.6",
+    "prophet>=1.1.6",
+    "pyod>=2.0",
+    "scikit-learn>=1.5",
+    "statsforecast>=1.7",
+    "stumpy>=1.13",
+    "xgboost>=2.1",
+]
+
+# Deep learning y modelo fundacional. Pesado: nunca se instala en la app.
+deep = [
+    "chronos-forecasting>=1.4",
+    "neuralforecast>=1.7",
+    "torch>=2.3",
+]
+
+# La app no calcula (docs/ARCHITECTURE.md A5): solo lee artefactos y dibuja.
+# Por eso NO arrastra torch, prophet ni neuralforecast, lo que hace viable el
+# despliegue en Streamlit Community Cloud. Si alguien intenta violar la regla de
+# capas de §2.1, el import falla en el entorno desplegado.
+app = [
+    "plotly>=5.22",
+    "streamlit>=1.36",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.100",
+    "mypy>=1.11",
+    "nbstripout>=0.7",
+    "pandas-stubs>=2.2",
+    "pre-commit>=3.7",
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "types-pyyaml>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chronolab"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+# ---------------------------------------------------------------------------
+# ruff: lint + formato
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "D",    # pydocstyle
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RET",  # flake8-return
+    "PTH",  # flake8-use-pathlib
+    "RUF",  # reglas propias de ruff
+]
+ignore = [
+    # El formateador ya controla la longitud del codigo; E501 solo aportaria
+    # ruido sobre prosa en docstrings, que se escribe para leerse.
+    "E501",
+    "D105",  # docstring en metodo magico
+    "D107",  # docstring en __init__ (va en la clase)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+# Las paginas de Streamlit se nombran por convencion del framework y no son
+# modulos importables: N999 (nombre de modulo invalido) no aplica.
+"src/chronolab/app/pages/*" = ["N999"]
+# N818 pide sufijo `Error`. Los nombres de excepcion son parte del contrato
+# publicado en docs/ARCHITECTURE.md §5 (secciones `Raises` de los tres
+# protocolos): `CutoffViolation` o `VintageNotSupported` se leen mejor en una
+# firma que sus variantes con sufijo, y renombrarlos desincronizaria el
+# documento normativo.
+"src/chronolab/errors.py" = ["N818"]
+# En tests la documentacion exhaustiva estorba mas de lo que aporta.
+"tests/**" = ["D100", "D101", "D102", "D103", "D104"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy: estricto sobre src/
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+strict = true
+warn_unreachable = true
+show_error_codes = true
+pretty = true
+# Las paginas de Streamlit tienen nombres que no son identificadores validos,
+# asi que mypy no puede asignarles un nombre de modulo.
+exclude = "^src/chronolab/app/pages/"
+
+[[tool.mypy.overrides]]
+# Cuarentena de librerias sin tipos (docs/ARCHITECTURE.md D16). Ningun `Any`
+# sale de aqui: lo que sale es un DataFrame validado contra su esquema pandera.
+module = [
+    "chronos.*",
+    "lightgbm.*",
+    "mlforecast.*",
+    "neuralforecast.*",
+    "optuna.*",
+    "pandera.*",
+    "prophet.*",
+    "pyod.*",
+    "statsforecast.*",
+    "stumpy.*",
+    "ulid.*",
+    "xgboost.*",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "slow: tests que tardan (se excluyen con `make test-fast`)",
+    "network: tests que requieren acceso a red",
+]
+
+[tool.coverage.run]
+source = ["src/chronolab"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]

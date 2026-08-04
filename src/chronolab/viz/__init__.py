@@ -1,0 +1,1 @@
+"""Figuras Plotly del proyecto."""
