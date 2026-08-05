@@ -77,11 +77,27 @@ dev = [
     "types-pyyaml>=6.0",
 ]
 
+# Herramientas de notebook y las librerias de diagnostico que usa la EDA
+# (docs/ARCHITECTURE.md no lista un extra de paquete para esto porque no es
+# parte del producto instalable: `plotly` vive tambien en el extra `app`, aqui
+# se repite para que `chronolab.viz.plots` sea importable y testeable en el
+# entorno de desarrollo por defecto sin instalar el extra completo de la app).
+notebook = [
+    "ipykernel>=6.29",
+    "kaleido>=1.0",
+    "nbclient>=0.10",
+    "nbconvert>=7.16",
+    "nbformat>=5.10",
+    "plotly>=5.22",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/chronolab"]
 
 [tool.uv]
-default-groups = ["dev"]
+default-groups = ["dev", "notebook"]
 
 # ---------------------------------------------------------------------------
 # ruff: lint + formato
@@ -158,9 +174,12 @@ module = [
     "neuralforecast.*",
     "optuna.*",
     "pandera.*",
+    "plotly.*",
     "prophet.*",
     "pyod.*",
+    "scipy.*",
     "statsforecast.*",
+    "statsmodels.*",
     "stumpy.*",
     "ulid.*",
     "xgboost.*",
