@@ -17,6 +17,7 @@ __all__ = [
     "ShortTrainWarning",
     "SourceUnavailable",
     "StaleCacheWarning",
+    "UnstableMetricWarning",
     "VintageNotSupported",
     "WindowValidationError",
 ]
@@ -132,6 +133,18 @@ class StaleCacheWarning(UserWarning):
     una entrada de cache anterior a la ventana de frescura configurada. Servir
     la version obsoleta es preferible a fallar, pero debe quedar visible: el
     llamante decide si eso es aceptable para su caso de uso.
+    """
+
+
+class UnstableMetricWarning(UserWarning):
+    """El denominador de una metrica esta cerca de cero y el valor no es fiable.
+
+    Lo emiten MAPE cuando la serie pasa cerca de cero —el error relativo se
+    dispara sin que la prediccion sea peor— y MASE cuando el naive estacional del
+    entrenamiento no comete ningun error, que deja la metrica indefinida. En
+    ambos casos el numero se sigue calculando y se devuelve: ocultarlo obligaria
+    a adivinar por que falta, y el aviso dice exactamente cuantas observaciones
+    lo provocan.
     """
 
 
