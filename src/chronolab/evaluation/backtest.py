@@ -719,6 +719,15 @@ def _repair_quantile_crossing(
     del cruce es un diagnostico del modelo, asi que se cuenta en lugar de
     arreglarse en silencio.
 
+    Un modelo que solo calibra algunos niveles —dos bandas conformales en vez
+    de los siete cuantiles canonicos, por ejemplo— deja `NaN` en las columnas
+    que no calculo (docs/ARCHITECTURE.md §7.3: nunca se inventa un intervalo).
+    Esas `NaN` no participan en la comprobacion de cruce ni en el reordenado:
+    ``numpy.sort`` trata `NaN` como el valor mas grande y las desplazaria al
+    final de la fila, pisando un cuantil real que si se calculo. Aqui se
+    ordenan solo los valores finitos de cada fila, cada uno de vuelta a una
+    posicion que ya era finita; las columnas sin calcular siguen siendo `NaN`.
+
     Parameters
     ----------
     prediction
@@ -735,8 +744,19 @@ def _repair_quantile_crossing(
         return prediction, 0
 
     values = prediction[list(quantile_columns)].to_numpy(dtype=float)
-    ordered = np.sort(values, axis=1)
-    crossed = ~np.isclose(values, ordered, equal_nan=True).all(axis=1)
+    ordered = values.copy()
+    crossed = np.zeros(len(values), dtype=bool)
+
+    for row in range(values.shape[0]):
+        finite = np.isfinite(values[row])
+        if finite.sum() < 2:
+            continue
+        current = values[row, finite]
+        sorted_values = np.sort(current)
+        if not np.array_equal(current, sorted_values):
+            ordered[row, finite] = sorted_values
+            crossed[row] = True
+
     n_crossed = int(crossed.sum())
     if n_crossed:
         repaired = prediction.copy()

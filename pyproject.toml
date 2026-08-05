@@ -144,6 +144,15 @@ convention = "numpy"
 # firma que sus variantes con sufijo, y renombrarlos desincronizaria el
 # documento normativo.
 "src/chronolab/errors.py" = ["N818"]
+# N815 rechaza mayusculas en atributos de instancia; `max_P`/`max_Q` son los
+# nombres exactos de statsforecast.AutoARIMA para los ordenes *estacionales*
+# (P, Q en notacion Box-Jenkins, para distinguirlos de p, q). Renombrarlos en
+# minusculas rompe esa distincion y desincroniza la firma con la libreria que
+# envuelven. N806 rechaza variables locales en PascalCase, pero aqui contienen
+# clases importadas perezosamente (statsforecast/prophet no viven en el
+# nucleo): `StatsForecast = ...; sf = StatsForecast(...)` es mas legible que
+# forzar minusculas a un nombre que es, literalmente, una clase.
+"src/chronolab/models/adapters/statsforecast.py" = ["N806", "N815"]
 # En tests la documentacion exhaustiva estorba mas de lo que aporta.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104"]
 

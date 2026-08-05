@@ -35,6 +35,7 @@ from tests.fixtures.models import (
     CrossedQuantileProbe,
     CutoffViolatingProbe,
     FailingProbe,
+    PartialQuantileProbe,
     ScaledExogProbe,
     SeasonalNaiveProbe,
 )
@@ -407,6 +408,24 @@ class TestFallosVisibles:
         assert (np.diff(values, axis=1) >= 0).all()
         # Reparar en silencio ocultaria un diagnostico del modelo.
         assert (result.model_runs["quantile_crossings"] == len(result.forecasts) / 3).all()
+
+    def test_reparar_el_cruce_no_pisa_los_cuantiles_que_el_modelo_no_calculo(
+        self, hourly_panel: Panel
+    ) -> None:
+        # Un modelo que solo calibra dos niveles dice cuantiles centrales en
+        # NaN (no aparecen en su columna: no se inventa un intervalo).
+        # `np.sort` trata NaN como el valor mas grande, asi que ordenar la fila
+        # entera sin excluirlos desplazaria los NaN al final y pisaria un
+        # cuantil real que si se calculo. Este es exactamente el caso que
+        # `PartialQuantileProbe` esta hecho para provocar.
+        result = backtest(hourly_panel, [PartialQuantileProbe()], PLAN)
+
+        low, high = quantile_column(QUANTILES[0]), quantile_column(QUANTILES[-1])
+        central = [quantile_column(q) for q in QUANTILES[1:-1]]
+
+        assert result.forecasts[central].isna().all().all()
+        assert (result.forecasts[low] <= result.forecasts[high]).all()
+        assert not result.forecasts[high].isna().any()
 
     def test_un_modelo_que_predice_su_propio_cutoff_detiene_el_run(
         self, hourly_panel: Panel

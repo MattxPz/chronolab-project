@@ -12,6 +12,10 @@ podria afirmar:
 - `FailingProbe`, `CutoffViolatingProbe` y `CrossedQuantileProbe` producen los
   tres fallos que el motor tiene que tratar de tres maneras distintas: registrar,
   abortar y reparar.
+- `PartialQuantileProbe` deja sin calcular los cuantiles centrales (como hacen
+  los adaptadores de statsforecast cuando solo se calibran un par de niveles):
+  comprueba que reparar el cruce de los cuantiles que si existen no pisa con
+  `NaN` los que no se pidieron ajustar.
 
 Los modelos son `frozen`: el estado ajustado vive en el objeto que devuelve
 `fit`. Las listas de registro se mutan, no se reasignan, que es lo que permite
@@ -36,6 +40,7 @@ SEASONAL_NAIVE_ID = ModelId("probe_seasonal_naive")
 FAILING_ID = ModelId("probe_failing")
 CUTOFF_VIOLATING_ID = ModelId("probe_cutoff_violating")
 CROSSED_QUANTILE_ID = ModelId("probe_crossed_quantiles")
+PARTIAL_QUANTILE_ID = ModelId("probe_partial_quantiles")
 
 EXOG_REQUIREMENTS = ModelRequirements(needs_futr_exog=True, min_context=2)
 SEASONAL_REQUIREMENTS = ModelRequirements(min_context=24)
@@ -418,6 +423,64 @@ class CrossedQuantileProbe:
 
     def fit(self, train: Panel, *, h: int) -> _FittedCrossedQuantiles:
         return _FittedCrossedQuantiles(
+            model_id=self.model_id,
+            cutoff=train.last_ds,
+            h=h,
+            fit_seconds=0.0,
+            freq=train.spec.freq,
+            ids=tuple(str(uid) for uid in train.ids()),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _FittedPartialQuantiles:
+    """Ajuste que solo calibra dos niveles y deja el resto de cuantiles sin calcular."""
+
+    model_id: ModelId
+    cutoff: pd.Timestamp
+    h: int
+    fit_seconds: float
+    freq: str
+    ids: tuple[str, ...]
+
+    @property
+    def n_params(self) -> int | None:
+        return None
+
+    def predict(
+        self,
+        futr: FutrFrame | None = None,
+        *,
+        quantiles: Sequence[float] = QUANTILES,
+    ) -> pd.DataFrame:
+        grid = pd.date_range(self.cutoff, periods=self.h + 1, freq=self.freq)[1:]
+        frame = pd.DataFrame(
+            {
+                "unique_id": np.repeat(list(self.ids), self.h),
+                "ds": np.tile(grid.to_numpy(), len(self.ids)),
+                "y_hat": 100.0,
+            }
+        )
+        # Solo los dos cuantiles mas extremos, y cruzados a proposito; el
+        # resto de la rejilla pedida (incluida la mediana) no se calcula,
+        # igual que un adaptador que solo calibro un par de niveles conformales.
+        ordered = sorted(quantiles)
+        if len(ordered) >= 2:
+            lowest, highest = ordered[0], ordered[-1]
+            frame[quantile_column(lowest)] = 108.0  # el bajo, por encima del alto
+            frame[quantile_column(highest)] = 92.0  # el alto, por debajo del bajo
+        return frame
+
+
+@dataclass(frozen=True)
+class PartialQuantileProbe:
+    """Modelo probabilistico que solo calibra dos cuantiles extremos, cruzados."""
+
+    model_id: ModelId = PARTIAL_QUANTILE_ID
+    requires: ModelRequirements = QUANTILE_REQUIREMENTS
+
+    def fit(self, train: Panel, *, h: int) -> _FittedPartialQuantiles:
+        return _FittedPartialQuantiles(
             model_id=self.model_id,
             cutoff=train.last_ds,
             h=h,
