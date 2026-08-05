@@ -150,6 +150,32 @@ class Panel:
         """
         return tuple(SeriesId(str(value)) for value in self.df["unique_id"].unique())
 
+    @property
+    def first_ds(self) -> pd.Timestamp:
+        """Primera marca de tiempo del panel, sobre todas las series."""
+        return pd.Timestamp(self.df["ds"].min())
+
+    @property
+    def last_ds(self) -> pd.Timestamp:
+        """Ultima marca de tiempo del panel, sobre todas las series."""
+        return pd.Timestamp(self.df["ds"].max())
+
+    def grid(self) -> pd.DatetimeIndex:
+        """Rejilla temporal completa que cubre el panel, a ``spec.freq``.
+
+        Las series pueden empezar o terminar en instantes distintos; la rejilla
+        es la union, de la primera marca a la ultima. Es la referencia sobre la
+        que `RollingOriginSplitter` hace su aritmetica: al ser regular por el
+        invariante I3, contar pasos y sumar `freq` son la misma operacion, que es
+        lo que hace imposible un off-by-one en el `gap`.
+
+        Returns
+        -------
+        pandas.DatetimeIndex
+            De `first_ds` a `last_ds` con paso ``spec.freq``, en UTC ingenuo.
+        """
+        return pd.date_range(self.first_ds, self.last_ds, freq=self.spec.freq)
+
     def slice(self, start: pd.Timestamp, end: pd.Timestamp) -> "Panel":
         """Sub-panel con ``start <= ds <= end``.
 
@@ -161,16 +187,36 @@ class Panel:
         Returns
         -------
         Panel
-            Panel nuevo con la misma `spec` y las mismas estaticas.
+            Panel nuevo con la misma `spec`. Las estaticas se recortan a las
+            series que sobreviven al corte, de modo que se sigue cumpliendo I7
+            (una fila por serie del panel) y un join posterior no duplica filas.
+
+        Raises
+        ------
+        PanelValidationError
+            Si `start` es posterior a `end`.
         """
-        raise NotImplementedError
+        if start > end:
+            raise PanelValidationError(f"slice con start ({start}) posterior a end ({end})")
+
+        mask = (self.df["ds"] >= start) & (self.df["ds"] <= end)
+        df = self.df.loc[mask].reset_index(drop=True)
+
+        static = self.static
+        if static is not None:
+            kept = df["unique_id"].unique()
+            static = static.loc[static["unique_id"].isin(kept)].reset_index(drop=True)
+
+        return Panel(df=df, spec=self.spec, static=static)
 
     def train(self, window: "Window") -> "Panel":
         """Rebanada de entrenamiento de una ventana.
 
         Devuelve ``window.train_start <= ds <= window.cutoff``. Es lo unico que
         recibe ``Forecaster.fit``: el modelo nunca ve el panel completo, asi que
-        no tiene forma de mirar mas alla del cutoff.
+        no tiene forma de mirar mas alla del cutoff. Como el corte se hace aqui y
+        no en el adaptador, cualquier estadistico que el modelo ajuste (escalado,
+        imputacion, calibracion) solo puede haber visto ``ds <= cutoff``.
 
         Parameters
         ----------
@@ -182,7 +228,7 @@ class Panel:
         Panel
             Panel recortado al tramo de entrenamiento.
         """
-        raise NotImplementedError
+        return self.slice(window.train_start, window.cutoff)
 
     def actuals(self, window: "Window") -> pd.DataFrame:
         """Valores observados del tramo de evaluacion de una ventana.
@@ -195,20 +241,30 @@ class Panel:
         Returns
         -------
         pandas.DataFrame
-            Columnas ``unique_id``, ``ds`` y ``y`` para
-            ``[window.first_pred, window.last_pred]``.
+            Columnas ``unique_id``, ``ds`` y la objetivo, para
+            ``[window.first_pred, window.last_pred]``. Los huecos del panel
+            viajan como ``NaN`` explicito (invariante I3), nunca como filas
+            ausentes: una serie sin observacion en un instante evaluado tiene que
+            poder distinguirse de una serie que no se evaluo.
         """
-        raise NotImplementedError
+        mask = (self.df["ds"] >= window.first_pred) & (self.df["ds"] <= window.last_pred)
+        columns = ["unique_id", "ds", self.spec.target]
+        return self.df.loc[mask, columns].reset_index(drop=True)
 
     def to_nixtla(self) -> pd.DataFrame:
         """Vista en el dialecto que esperan statsforecast, mlforecast y neuralforecast.
 
+        El formato largo canonico ya usa el vocabulario del ecosistema
+        (``unique_id``, ``ds``, ``y``), asi que la conversion es una proyeccion de
+        columnas en orden estable. Se devuelve una copia: lo que salga de aqui
+        entra en libreria ajena y no debe poder modificar el panel.
+
         Returns
         -------
         pandas.DataFrame
-            La trama larga con los nombres de columna del ecosistema Nixtla.
+            Columnas ``spec.columns``, en ese orden.
         """
-        raise NotImplementedError
+        return self.df[list(self.spec.columns)].copy()
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pandas as pd
 import pytest
 
-from chronolab.errors import WindowValidationError
+from chronolab.errors import ShortTrainWarning, WindowValidationError
 from chronolab.evaluation.splitters import RollingOriginSplitter, Window
 from chronolab.panel import Panel
 
@@ -131,7 +133,102 @@ class TestRollingOriginSplitter:
         for forbidden in ("split_mask", "from_indices", "train_test_split", "sample"):
             assert not hasattr(splitter, forbidden)
 
-    def test_split_esta_pendiente_de_implementar(self, hourly_panel: Panel) -> None:
-        splitter = RollingOriginSplitter(h=24, n_windows=5)
-        with pytest.raises(NotImplementedError):
+
+class TestSplit:
+    def test_genera_las_ventanas_pedidas_ancladas_al_final_del_panel(
+        self, hourly_panel: Panel
+    ) -> None:
+        windows = RollingOriginSplitter(h=24, n_windows=5, step_size=24).split(hourly_panel)
+
+        assert len(windows) == 5
+        assert [w.window_id for w in windows] == [0, 1, 2, 3, 4]
+        # El ancla es el final: la ultima ventana evalua hasta el ultimo dato.
+        assert windows[-1].last_pred == hourly_panel.last_ds
+
+    def test_los_cutoffs_se_separan_exactamente_step_size(self, hourly_panel: Panel) -> None:
+        windows = RollingOriginSplitter(h=24, n_windows=4, step_size=48).split(hourly_panel)
+        separations = {b.cutoff - a.cutoff for a, b in pairwise(windows)}
+        assert separations == {pd.Timedelta(hours=48)}
+
+    def test_el_modo_expansivo_mantiene_el_inicio_del_entrenamiento(
+        self, hourly_panel: Panel
+    ) -> None:
+        windows = RollingOriginSplitter(h=24, n_windows=4, step_size=24).split(hourly_panel)
+        assert {w.train_start for w in windows} == {hourly_panel.first_ds}
+
+    def test_el_modo_deslizante_mantiene_la_longitud_del_entrenamiento(
+        self, hourly_panel: Panel
+    ) -> None:
+        splitter = RollingOriginSplitter(
+            h=24, n_windows=4, step_size=24, mode="sliding", train_size=336
+        )
+        windows = splitter.split(hourly_panel)
+
+        lengths = {w.cutoff - w.train_start for w in windows}
+        assert lengths == {pd.Timedelta(hours=335)}  # 336 pasos inclusivos
+        # Y el inicio se mueve, que es lo que lo distingue del expansivo.
+        assert len({w.train_start for w in windows}) == 4
+
+    def test_el_gap_separa_el_entrenamiento_de_la_evaluacion(self, hourly_panel: Panel) -> None:
+        windows = RollingOriginSplitter(h=24, n_windows=3, step_size=24, gap=6).split(hourly_panel)
+        for window in windows:
+            assert window.first_pred - window.cutoff == pd.Timedelta(hours=7)
+            assert window.last_pred - window.first_pred == pd.Timedelta(hours=23)
+
+    def test_las_ultimas_ventanas_son_de_holdout(self, hourly_panel: Panel) -> None:
+        windows = RollingOriginSplitter(h=24, n_windows=5, step_size=24, holdout_windows=2).split(
+            hourly_panel
+        )
+        assert [w.stage for w in windows] == ["dev", "dev", "dev", "holdout", "holdout"]
+
+    def test_descarta_con_aviso_las_ventanas_sin_entrenamiento_suficiente(
+        self, hourly_panel: Panel
+    ) -> None:
+        # El panel tiene 2016 pasos; con h=24 y step_size=168 el cutoff mas
+        # antiguo cae en el paso 984, asi que exigir 1500 de entrenamiento deja
+        # fuera las primeras ventanas en lugar de recortarlas.
+        splitter = RollingOriginSplitter(h=24, n_windows=6, step_size=168, min_context=1500)
+        with pytest.warns(ShortTrainWarning, match="entrenamiento insuficiente"):
+            windows = splitter.split(hourly_panel)
+
+        assert 0 < len(windows) < 6
+        assert all(w.cutoff - w.train_start >= pd.Timedelta(hours=1499) for w in windows)
+        # Renumeradas desde cero y contiguas: `windows.parquet` no tiene huecos.
+        assert [w.window_id for w in windows] == list(range(len(windows)))
+
+    def test_el_holdout_no_se_desplaza_al_descartar_ventanas(self, hourly_panel: Panel) -> None:
+        # El holdout se decide sobre la numeracion del plan: descartar ventanas
+        # antiguas no puede cambiar cuales son las que se reportan.
+        splitter = RollingOriginSplitter(
+            h=24, n_windows=6, step_size=168, min_context=1500, holdout_windows=2
+        )
+        with pytest.warns(ShortTrainWarning):
+            windows = splitter.split(hourly_panel)
+
+        assert [w.stage for w in windows[-2:]] == ["holdout", "holdout"]
+        assert all(w.stage == "dev" for w in windows[:-2])
+
+    def test_rechaza_un_panel_que_no_da_para_una_ventana(self, hourly_panel: Panel) -> None:
+        short = hourly_panel.slice(
+            hourly_panel.first_ds, hourly_panel.first_ds + pd.Timedelta(hours=10)
+        )
+        with pytest.raises(WindowValidationError, match="el panel tiene 11 pasos"):
+            RollingOriginSplitter(h=24, n_windows=1).split(short)
+
+    def test_rechaza_un_plan_cuyas_ventanas_no_caben_todas_por_historia(
+        self, hourly_panel: Panel
+    ) -> None:
+        splitter = RollingOriginSplitter(
+            h=24, n_windows=2, mode="sliding", train_size=5000, min_context=5000
+        )
+        with pytest.raises(WindowValidationError, match="ninguna de las 2 ventanas"):
             splitter.split(hourly_panel)
+
+    def test_el_entrenamiento_nunca_alcanza_al_tramo_evaluado(self, hourly_panel: Panel) -> None:
+        # La propiedad central del origen rodante, comprobada aqui sobre el caso
+        # mas peligroso: step_size < h, es decir tramos de evaluacion solapados
+        # entre ventanas. El solape entre ventanas es legitimo; el solape entre
+        # el train y el test de la *misma* ventana nunca lo es.
+        windows = RollingOriginSplitter(h=48, n_windows=6, step_size=12).split(hourly_panel)
+        for window in windows:
+            assert window.train_start <= window.cutoff < window.first_pred <= window.last_pred

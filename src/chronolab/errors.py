@@ -12,7 +12,9 @@ __all__ = [
     "MissingFutrExog",
     "PanelValidationError",
     "PerfectForesightWarning",
+    "PredictionContractError",
     "SchemaVersionError",
+    "ShortTrainWarning",
     "SourceUnavailable",
     "StaleCacheWarning",
     "VintageNotSupported",
@@ -84,6 +86,20 @@ class WindowValidationError(ChronolabError):
     """Una ventana de backtesting es internamente inconsistente."""
 
 
+class PredictionContractError(ChronolabError):
+    """Un modelo ha devuelto una prediccion que incumple el contrato de `predict`.
+
+    Filas de mas o de menos, series que no estaban en el entrenamiento, instantes
+    fuera del tramo evaluado o columnas obligatorias ausentes. Es un fallo *del
+    modelo*, no del arnes: el motor lo registra con ``status="failed"`` en
+    `model_runs` y sigue con el resto, porque un modelo roto que desaparece del
+    leaderboard produce una comparacion mentirosa.
+
+    No hereda de `LeakageError` a proposito. Predecir un instante ya conocido si
+    es fuga, y eso se senala con `CutoffViolation`, que nunca se captura.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Artefactos
 # --------------------------------------------------------------------------- #
@@ -116,6 +132,15 @@ class StaleCacheWarning(UserWarning):
     una entrada de cache anterior a la ventana de frescura configurada. Servir
     la version obsoleta es preferible a fallar, pero debe quedar visible: el
     llamante decide si eso es aceptable para su caso de uso.
+    """
+
+
+class ShortTrainWarning(UserWarning):
+    """El splitter ha descartado ventanas por falta de entrenamiento.
+
+    Se descartan, nunca se recortan: una ventana con menos historia de la
+    declarada no es comparable con las demas, y silenciarla haria que el numero
+    de ventanas del run no coincidiese con el del plan sin que nada lo dijese.
     """
 
 
