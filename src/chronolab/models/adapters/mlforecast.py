@@ -175,13 +175,18 @@ def _require_mlforecast() -> tuple[type, type, type, type, type, type, type, typ
     )
 
 
-def _require_lightgbm() -> type:
+def _require_lightgbm() -> Any:
     """Importa `lightgbm.LGBMRegressor` bajo demanda.
 
     Returns
     -------
-    type
-        La clase `LGBMRegressor`.
+    Any
+        La clase `LGBMRegressor`. El tipo de retorno es `Any` a proposito:
+        `lightgbm` esta en la cuarentena de tipos de D16 (docs/ARCHITECTURE.md),
+        y fingir un tipo mas preciso aqui no anadiria seguridad real —ademas de
+        que, sin el extra `ml` instalado (el entorno por defecto de CI), mypy
+        resuelve el import como `Any` y un retorno anotado `type` dispara
+        `no-any-return`.
 
     Raises
     ------
@@ -198,13 +203,14 @@ def _require_lightgbm() -> type:
     return LGBMRegressor
 
 
-def _require_xgboost() -> type:
+def _require_xgboost() -> Any:
     """Importa `xgboost.XGBRegressor` bajo demanda.
 
     Returns
     -------
-    type
-        La clase `XGBRegressor`.
+    Any
+        La clase `XGBRegressor`. El tipo de retorno es `Any` a proposito, por
+        el mismo motivo que `_require_lightgbm`.
 
     Raises
     ------
