@@ -8,6 +8,7 @@ __all__ = [
     "ArtifactNotFound",
     "ChronolabError",
     "CutoffViolation",
+    "FoundationModelUnavailable",
     "LeakageError",
     "MissingFutrExog",
     "PanelValidationError",
@@ -81,6 +82,19 @@ class VintageNotSupported(ChronolabError):
 
 class MissingFutrExog(ChronolabError):
     """El modelo declara `needs_futr_exog` pero no ha recibido `FutrFrame`."""
+
+
+class FoundationModelUnavailable(ChronolabError):
+    """No se han podido obtener los pesos de un modelo fundacional (p. ej. Chronos).
+
+    Se lanza cuando `huggingface_hub` no encuentra el modelo en su cache local
+    (`~/.cache/huggingface`) y tampoco puede alcanzar el Hub para descargarlo. Es
+    el equivalente de `SourceUnavailable` para pesos de modelo en lugar de datos:
+    el resto del proyecto no depende de la descarga, asi que este fallo debe
+    quedar contenido en el adaptador que la necesita y no propagarse como un
+    `ImportError` o una excepcion generica de `huggingface_hub` que no diga que
+    hacer al respecto.
+    """
 
 
 class WindowValidationError(ChronolabError):

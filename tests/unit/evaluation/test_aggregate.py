@@ -204,6 +204,7 @@ class TestEsquemaDelLeaderboard:
             "n_windows_failed",
             "n_windows_skipped",
             "is_zero_shot",
+            "training_regime",
         }
         assert esperadas <= set(leaderboard.columns)
         assert list(leaderboard.columns[:5]) == [
@@ -339,6 +340,15 @@ class TestCoste:
         assert flojo["fit_seconds_total"].tolist() == pytest.approx([0.5] * len(flojo))
         assert flojo["is_zero_shot"].all()
         assert not exacto["is_zero_shot"].any()
+
+    def test_training_regime_es_la_version_legible_de_is_zero_shot(
+        self, leaderboard: pd.DataFrame
+    ) -> None:
+        exacto = leaderboard[leaderboard["model_id"] == "exacto"]
+        flojo = leaderboard[leaderboard["model_id"] == "flojo"]
+
+        assert (exacto["training_regime"] == "fitted").all()
+        assert (flojo["training_regime"] == "zero-shot").all()
 
     def test_el_coste_se_repite_en_las_filas_de_la_misma_modelo(
         self, leaderboard: pd.DataFrame

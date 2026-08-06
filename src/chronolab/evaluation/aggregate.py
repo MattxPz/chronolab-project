@@ -61,6 +61,7 @@ _TIMING_COLUMNS: tuple[str, ...] = (
     "n_windows_failed",
     "n_windows_skipped",
     "is_zero_shot",
+    "training_regime",
 )
 """Columnas del eje **precision-coste**, tan importante como la precision sola.
 
@@ -69,6 +70,12 @@ ella un LSTM de cinco mil parametros y un transformer de medio millon se leen
 igual en una tabla ordenada por MASE. Es `Int64` (entero anulable) porque los
 modelos sin parametros ajustados por optimizacion —baselines, statsforecast—
 declaran `None`, y eso es distinto de declarar cero.
+
+`training_regime` es la version legible de `is_zero_shot`: ``"zero-shot"`` o
+``"fitted"``. Se mantienen las dos porque resuelven problemas distintos —
+`is_zero_shot` es para filtrar y ordenar en pandas, `training_regime` es la
+columna que se ensena en la app y en el README— y derivar la segunda de la
+primera evita que se puedan desincronizar.
 """
 
 
@@ -355,10 +362,10 @@ def _timing_row(runs: pd.DataFrame) -> dict[str, object]:
     -------
     dict
         Totales y medias de coste, tamano del modelo, recuento de ventanas por
-        estado y la marca de zero-shot. `fit_seconds_mean` promedia **solo las
-        ventanas en las que hubo ajuste**: incluir las reutilizadas diluiria el
-        coste real de entrenar por la politica de refit, que es un parametro
-        del plan y no una propiedad del modelo.
+        estado y el regimen de entrenamiento. `fit_seconds_mean` promedia
+        **solo las ventanas en las que hubo ajuste**: incluir las reutilizadas
+        diluiria el coste real de entrenar por la politica de refit, que es un
+        parametro del plan y no una propiedad del modelo.
 
         `n_params` se toma del **maximo** sobre las ventanas, no de la media:
         es una propiedad de la arquitectura, identica en todas las ventanas de
@@ -369,6 +376,7 @@ def _timing_row(runs: pd.DataFrame) -> dict[str, object]:
     refits = runs[runs["refit"]]
     ok = runs[runs["status"] == "ok"]
     params = runs["n_params"].dropna() if "n_params" in runs.columns else pd.Series(dtype="Int64")
+    is_zero_shot = bool(runs["is_zero_shot"].any())
     return {
         "n_params": int(params.max()) if not params.empty else None,
         "fit_seconds_total": float(runs["fit_seconds"].sum()),
@@ -379,7 +387,8 @@ def _timing_row(runs: pd.DataFrame) -> dict[str, object]:
         "n_windows_ok": int((runs["status"] == "ok").sum()),
         "n_windows_failed": int((runs["status"] == "failed").sum()),
         "n_windows_skipped": int((runs["status"] == "skipped").sum()),
-        "is_zero_shot": bool(runs["is_zero_shot"].any()),
+        "is_zero_shot": is_zero_shot,
+        "training_regime": "zero-shot" if is_zero_shot else "fitted",
     }
 
 
