@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from chronolab.data.calendar import calendar_features, fourier_terms, holiday_flags
+from chronolab.data.calendar import (
+    calendar_features,
+    fourier_terms,
+    holiday_eve_flags,
+    holiday_flags,
+)
 
 
 class TestHolidayFlags:
@@ -46,6 +51,36 @@ class TestHolidayFlags:
             holiday_flags(ds, country="ES")
 
 
+class TestHolidayEveFlags:
+    def test_la_vispera_de_ano_nuevo_es_vispera_de_festivo_en_espana(self) -> None:
+        ds = pd.Series(pd.to_datetime(["2023-12-31 10:00"]))
+        result = holiday_eve_flags(ds, country="ES", tz_display="Europe/Madrid")
+        assert result.iloc[0]
+
+    def test_el_propio_festivo_no_es_su_propia_vispera(self) -> None:
+        ds = pd.Series(pd.to_datetime(["2024-01-01 10:00"]))
+        result = holiday_eve_flags(ds, country="ES", tz_display="Europe/Madrid")
+        assert not result.iloc[0]
+
+    def test_un_dia_laborable_cualquiera_no_es_vispera(self) -> None:
+        ds = pd.Series(pd.to_datetime(["2024-06-14 10:00"]))
+        result = holiday_eve_flags(ds, country="ES", tz_display="Europe/Madrid")
+        assert not result.iloc[0]
+
+    def test_el_31_de_diciembre_mira_al_ano_siguiente(self) -> None:
+        # Ejercita el a-o+1 que anade holiday_eve_flags al pedir el calendario:
+        # sin el, el 1 de enero del ano siguiente no estaria en `calendar` y la
+        # vispera de fin de ano nunca se marcaria.
+        ds = pd.Series(pd.to_datetime(["2025-12-31 10:00"]))
+        result = holiday_eve_flags(ds, country="ES", tz_display="Europe/Madrid")
+        assert result.iloc[0]
+
+    def test_conserva_el_indice_de_entrada(self) -> None:
+        ds = pd.Series(pd.to_datetime(["2024-01-01"]), index=[42])
+        result = holiday_eve_flags(ds, country="ES")
+        assert list(result.index) == [42]
+
+
 class TestCalendarFeatures:
     def test_columnas_esperadas_sin_pais(self) -> None:
         ds = pd.Series(pd.to_datetime(["2024-01-01 12:00"]))
@@ -54,6 +89,7 @@ class TestCalendarFeatures:
             "ds",
             "hour",
             "dayofweek",
+            "day",
             "month",
             "is_weekend",
             "hour_sin",
@@ -65,12 +101,26 @@ class TestCalendarFeatures:
         }
         assert expected.issubset(result.columns)
         assert "is_holiday" not in result.columns
+        assert "is_holiday_eve" not in result.columns
 
     def test_anade_is_holiday_solo_si_se_pide_pais(self) -> None:
         ds = pd.Series(pd.to_datetime(["2024-01-01 12:00"]))
         result = calendar_features(ds, country="ES", tz_display="Europe/Madrid")
         assert "is_holiday" in result.columns
         assert result["is_holiday"].iloc[0]
+
+    def test_anade_is_holiday_eve_solo_si_se_pide_pais(self) -> None:
+        ds = pd.Series(pd.to_datetime(["2023-12-31 12:00"]))
+        result = calendar_features(ds, country="ES", tz_display="Europe/Madrid")
+        assert "is_holiday_eve" in result.columns
+        assert result["is_holiday_eve"].iloc[0]
+
+    def test_el_dia_del_mes_es_el_de_la_hora_local(self) -> None:
+        # 23:30 UTC del 30 de junio es ya 01:30 del 1 de julio en Madrid en verano.
+        ds = pd.Series(pd.to_datetime(["2024-06-30 23:30"]))
+        result = calendar_features(ds, tz_display="Europe/Madrid")
+        assert result["day"].iloc[0] == 1
+        assert result["month"].iloc[0] == 7
 
     def test_hora_local_difiere_de_la_hora_utc_por_el_huso(self) -> None:
         # 23:30 UTC de un dia es ya 00:30 del dia siguiente en Madrid en verano.

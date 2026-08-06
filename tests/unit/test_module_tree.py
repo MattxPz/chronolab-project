@@ -70,6 +70,7 @@ MODULES = [
     "chronolab.evaluation.metrics",
     "chronolab.evaluation.splitters",
     "chronolab.evaluation.stats_tests",
+    "chronolab.evaluation.tuning",
     "chronolab.artifacts",
     "chronolab.artifacts.reader",
     "chronolab.artifacts.schemas",

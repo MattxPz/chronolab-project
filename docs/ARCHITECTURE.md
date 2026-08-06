@@ -124,7 +124,8 @@ src/chronolab/
 │   ├── metrics.py               MASE, RMSE, MAE, sMAPE, MAPE(guardado), pinball, cobertura empírica, CRPS discreto.
 │   ├── anomaly_metrics.py       VUS-PR, F1 por rangos (Tatbul), métricas de afiliación (Huet). Nunca point-adjusted.
 │   ├── stats_tests.py           Diebold-Mariano con HAC y corrección HLN; Model Confidence Set para multiplicidad.
-│   └── aggregate.py             Reglas de rollup: de forecasts a la tabla metrics. Prohíbe promediar promedios.
+│   ├── aggregate.py             Reglas de rollup: de forecasts a la tabla metrics. Prohíbe promediar promedios.
+│   └── tuning.py                Tuning con Optuna, limitado por construcción a las ventanas dev del backtest.
 │
 ├── artifacts/
 │   ├── schemas.py               Esquemas pandera de cada tabla de artefacto + SCHEMA_VERSION.
@@ -837,7 +838,7 @@ Cómo encaja cada backend en esta firma —la prueba de que no se filtra:
 | Backend | `fit` | `predict` | Observaciones |
 |---|---|---|---|
 | `statsforecast` | Construye `StatsForecast` y llama `.fit(train.to_nixtla())` | `.predict(h, X_df=futr.df)` | `refit_cost="cheap"`; cuantiles nativos vía `level`, convertidos a rejilla canónica |
-| `mlforecast` | `MLForecast(...).fit(...)` con `lags`/`lag_transforms` filtrados por `max_lead` | `.predict(h, X_df=futr.df)` | Único backend con `supports_recursive=True` |
+| `mlforecast` | `MLForecast(...).fit(..., max_horizon=h si estrategia directa)` con los `lags`/`lag_transforms` de la propia objetivo delegados enteros en la librería (`features.builders.TargetFeatureConfig`); las exógenas manuales de `features.builders` (calendario, térmicas) sí se filtran por adelanto, con un criterio más estricto que `max_lead` porque el adaptador nunca lee `FutrFrame` | `.predict(h, X_df=...)` con `X_df` reconstruido desde la propia historia de entrenamiento, no desde `futr` | Único backend con `supports_recursive=True`, solo en su variante recursiva |
 | `neuralforecast` | Construye la red **dentro de `fit`**, con `h`, `futr_exog_list`, `hist_exog_list` derivados de `train.spec` | `.predict(futr_df=futr.df)` | `refit_cost="expensive"`; por eso la construcción diferida es necesaria, no un capricho |
 | Prophet | Un `Prophet()` por serie, `add_regressor` por cada `futr_exog` | `predict` sobre el frame futuro por serie | Coste O(n_series) por ventana: ver riesgo R2 |
 | LSTM propio | Dataset de ventanas + escalado por serie ajustado con train, early stopping sobre un corte interno del propio train | Forward pass con cabeza de cuantiles | `n_params` real, se reporta |
@@ -1434,7 +1435,7 @@ débiles, y donde solo hay eso, se dice.
 | **L2** | **Escalado o imputación ajustados con todo el dataset** | La arquitectura **no tiene etapa global de preprocesado**. `Panel` no expone `.scale()`, `.impute()` ni `.transform()`. Todo preprocesado dependiente de datos vive dentro de `Forecaster.fit(train)`, que solo recibe `ds <= cutoff` | ① |
 | **L3** | **Features con ventana centrada o prospectiva** | `features/ops.py` no exporta ninguna primitiva prospectiva sobre columnas con `max_lead=0`; `lead()` sobre histórica lanza en construcción. Refuerzo: **test de estabilidad por prefijos** — para todo `t`, `features(panel[:t])` debe coincidir exactamente con `features(panel)[:t]`. Cualquier operación que mire adelante rompe esa igualdad, sea cual sea su forma | ① + ⑤ |
 | **L4** | **Exógena futura que no era conocible** (reanálisis meteorológico como si fuese previsión) | `FutrProvider` con `Vintage` explícito; `RealizedFutrProvider` emite `PerfectForesightWarning`; el vintage entra en el `config_hash`, se persiste en `runs` y `aggregate` **rechaza** comparar filas de vintages distintos | ② + ③ |
-| **L5** | **Tuning sobre las ventanas de reporte** | `BacktestPlan` expone `dev_windows` y `holdout_windows` por separado; la firma del optimizador acepta `Sequence[DevWindow]`, un tipo distinto de `Window`, así que pasarle ventanas de holdout no compila bajo mypy estricto. El leaderboard publica solo `stage="holdout"` | ① + ④ |
+| **L5** | **Tuning sobre las ventanas de reporte** | `evaluation.tuning.dev_only_panel()` recorta el `Panel` al último instante que cubren las ventanas `stage="dev"` *antes* de que exista ningún trial de Optuna: el tramo de holdout no está físicamente en la estructura que ve `tune()`, ni falta un tipo `DevWindow` distinto de `Window` para conseguirlo. El leaderboard publica solo `stage="holdout"` | ① |
 | **L6** | **Predecir instantes ya vistos** (contexto de Chronos que invade el test, off-by-one en el `gap`) | `FittedForecaster.cutoff` + comprobación `ds > cutoff` en `predict`, en el único camino de predicción. Intervalos semiabiertos `[start, end)` uniformes en todo el proyecto | ③ |
 | **L7** | **Exógena histórica leída en el futuro** | `FutrFrame` contiene solo columnas `futr_exog`. No están omitidas por convenio: no existen en la estructura | ① |
 | **L8** | **Feature derivada usada más allá de su disponibilidad** (`lag(y,24)` para predecir a 48 pasos sin recursión) | Álgebra de `max_lead` (§4.4): el motor filtra features por `max_lead >= L` en estrategia directa; la recursiva exige `recursive_only=True` y `supports_recursive` | ① + ③ |

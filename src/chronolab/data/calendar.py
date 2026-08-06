@@ -16,7 +16,7 @@ import holidays as holidays_lib
 import numpy as np
 import pandas as pd
 
-__all__ = ["calendar_features", "fourier_terms", "holiday_flags"]
+__all__ = ["calendar_features", "fourier_terms", "holiday_eve_flags", "holiday_flags"]
 
 _EPOCH = pd.Timestamp("1970-01-01")
 
@@ -70,6 +70,47 @@ def holiday_flags(
     return pd.Series(is_holiday, index=ds.index, name="is_holiday")
 
 
+def holiday_eve_flags(
+    ds: pd.Series,
+    *,
+    country: str,
+    tz_display: str = "UTC",
+    subdiv: str | None = None,
+) -> pd.Series:
+    """Marca si el dia civil **siguiente** a cada marca de tiempo es festivo.
+
+    La vispera de un festivo es una feature con valor propio en demanda
+    electrica: el patron de consumo de un domingo que precede a un lunes
+    festivo se parece mas al de un festivo que al de un domingo cualquiera.
+    Como `holiday_flags`, la fecha civil se decide por `tz_display`, no por UTC.
+
+    Parameters
+    ----------
+    ds
+        Columna de tiempo en UTC ingenuo.
+    country
+        Codigo ISO 3166-1 alpha-2 del pais.
+    tz_display
+        Zona horaria local con la que se determina la fecha civil.
+    subdiv
+        Subdivision opcional del pais, para calendarios con festivos
+        regionales.
+
+    Returns
+    -------
+    pandas.Series
+        Booleana, con el mismo indice que `ds` y nombre ``"is_holiday_eve"``.
+    """
+    local = _to_local(ds, tz_display=tz_display)
+    # +1 al final del rango de anos: el 31 de diciembre mira al 1 de enero
+    # del ano siguiente, que si no se incluye aqui el calendario no conoce.
+    years = sorted({timestamp.year for timestamp in local} | {local.max().year + 1})
+    calendar = holidays_lib.country_holidays(country, subdiv=subdiv, years=years)
+    next_day = (local + pd.Timedelta(days=1)).date
+    is_eve = np.fromiter((day in calendar for day in next_day), dtype=bool, count=len(local))
+    return pd.Series(is_eve, index=ds.index, name="is_holiday_eve")
+
+
 def calendar_features(
     ds: pd.Series,
     *,
@@ -88,24 +129,27 @@ def calendar_features(
         y mes. Sin esto, "es festivo" o "es la hora punta" quedarian atados al
         reloj UTC, que no es el que vive nadie.
     country
-        Si se indica, anade la columna ``is_holiday`` vía `holiday_flags`.
-        Si es ``None``, esa columna no se genera.
+        Si se indica, anade las columnas ``is_holiday`` (via `holiday_flags`) y
+        ``is_holiday_eve`` (via `holiday_eve_flags`). Si es ``None``, ninguna de
+        las dos se genera.
     subdiv
-        Se reenvia a `holiday_flags` cuando `country` esta presente.
+        Se reenvia a `holiday_flags` y `holiday_eve_flags` cuando `country`
+        esta presente.
 
     Returns
     -------
     pandas.DataFrame
         Con el mismo indice que `ds` y las columnas: ``ds`` (la entrada, sin
         modificar), ``hour`` (0-23), ``dayofweek`` (0=lunes .. 6=domingo),
-        ``month`` (1-12), ``is_weekend``, los pares seno/coseno de hora, dia de
-        la semana y mes (``hour_sin``, ``hour_cos``, ``dow_sin``, ``dow_cos``,
-        ``month_sin``, ``month_cos``) y, si `country` no es ``None``,
-        ``is_holiday``.
+        ``day`` (1-31, dia del mes), ``month`` (1-12), ``is_weekend``, los
+        pares seno/coseno de hora, dia de la semana y mes (``hour_sin``,
+        ``hour_cos``, ``dow_sin``, ``dow_cos``, ``month_sin``, ``month_cos``) y,
+        si `country` no es ``None``, ``is_holiday`` e ``is_holiday_eve``.
     """
     local = _to_local(ds, tz_display=tz_display)
     hour = local.hour.to_numpy().astype(np.float64)
     dow = local.dayofweek.to_numpy().astype(np.float64)
+    day = local.day.to_numpy().astype(np.float64)
     month = local.month.to_numpy().astype(np.float64)
 
     frame = pd.DataFrame(
@@ -113,6 +157,7 @@ def calendar_features(
             "ds": ds.to_numpy(),
             "hour": hour.astype(np.int16),
             "dayofweek": dow.astype(np.int16),
+            "day": day.astype(np.int16),
             "month": month.astype(np.int16),
             "is_weekend": dow >= 5,
             "hour_sin": np.sin(2 * np.pi * hour / 24.0).astype(np.float32),
@@ -127,6 +172,9 @@ def calendar_features(
 
     if country is not None:
         frame["is_holiday"] = holiday_flags(
+            ds, country=country, tz_display=tz_display, subdiv=subdiv
+        ).to_numpy()
+        frame["is_holiday_eve"] = holiday_eve_flags(
             ds, country=country, tz_display=tz_display, subdiv=subdiv
         ).to_numpy()
 
