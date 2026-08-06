@@ -13,6 +13,14 @@ Aun con esos topes minimos, ajustar de verdad sigue costando CPU real (varios
 fits de `AutoARIMA` repetidos a lo largo del fichero): todo el modulo se marca
 `slow` y queda fuera de `make test-fast`, igual que el resto de la suite que
 paga un coste de computo real en vez de E/S.
+
+`statsforecast` vive en el extra `ml` (D20), no en el nucleo: el job `quality`
+de CI hace un `uv sync` a secas, sin ese extra, exactamente igual que el
+entorno por defecto de `make test`. `pytest.importorskip` a nivel de modulo
+hace que todo el fichero se salte con limpieza ahi, en vez de fallar con un
+`ImportError` de cada test —el mismo patron que ya usa el cruce contra
+statsforecast en `test_baselines.py`, aplicado aqui a todo el fichero porque
+aqui *todo* el fichero depende de la libreria, no un solo test.
 """
 
 from __future__ import annotations
@@ -22,6 +30,8 @@ import sys
 import numpy as np
 import pandas as pd
 import pytest
+
+pytest.importorskip("statsforecast")
 
 from chronolab.data.futr import RealizedFutrProvider
 from chronolab.errors import PerfectForesightWarning

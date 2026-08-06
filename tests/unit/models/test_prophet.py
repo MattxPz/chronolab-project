@@ -3,6 +3,11 @@
 Ajustar Prophet de verdad cuesta CPU real (varios fits por serie en el
 fichero): todo el modulo se marca `slow`, igual que
 `tests/unit/models/test_statistical.py`.
+
+`prophet` vive en el extra `ml` (D20), no en el nucleo: el job `quality` de CI
+hace un `uv sync` a secas, sin ese extra. `pytest.importorskip` a nivel de
+modulo salta todo el fichero con limpieza ahi en vez de fallar con un
+`ImportError` por cada test.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ import sys
 import numpy as np
 import pandas as pd
 import pytest
+
+pytest.importorskip("prophet")
 
 from chronolab.data.futr import RealizedFutrProvider
 from chronolab.errors import MissingFutrExog, PerfectForesightWarning
