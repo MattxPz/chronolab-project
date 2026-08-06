@@ -27,9 +27,12 @@ son trazables a ese run; no hay ninguno escrito a mano.
 | auto_ets | 2.8257 | 6.5806 | 8.6399 | nan | nan |
 | auto_arima | 4.4527 | 10.3830 | 10.4803 | nan | nan |
 
-`reports/results/leaderboard.parquet` queda actualizado con las filas por
-serie y agregadas de los quince modelos (seis baselines, cuatro estadísticos
-más Prophet, y los cuatro modelos ML de este hito).
+La tabla de arriba es la de este hito: quince modelos (seis baselines, cuatro
+estadísticos más Prophet, y los cuatro de ML). El
+`reports/results/leaderboard.parquet` del repositorio lo regeneró después el
+hito de modelos profundos (`docs/DEEP_ANALYSIS.md`) sobre el mismo panel, el
+mismo plan y las mismas ventanas de holdout, así que contiene estos quince más
+los cuatro profundos —y las cifras de ML de arriba siguen siendo las suyas.
 
 ## 2. Estrategia recursiva frente a directa
 

@@ -194,6 +194,7 @@ class TestEsquemaDelLeaderboard:
             "crps_discrete",
             "coverage_50",
             "width_50",
+            "n_params",
             "fit_seconds_total",
             "fit_seconds_mean",
             "predict_seconds_total",
@@ -351,6 +352,31 @@ class TestCoste:
         assert (leaderboard["n_windows_ok"] == 1).all()
         assert (leaderboard["n_windows_failed"] == 0).all()
         assert (leaderboard["n_refits"] == 1).all()
+
+    def test_el_tamano_del_modelo_viaja_junto_al_coste(self, leaderboard: pd.DataFrame) -> None:
+        # Sin `n_params`, un LSTM de cinco mil parametros y un transformer de
+        # medio millon se leen igual en una tabla ordenada por MASE.
+        exacto = leaderboard[leaderboard["model_id"] == "exacto"]
+        assert (exacto["n_params"] == 10).all()
+
+    def test_un_modelo_sin_parametros_ajustados_queda_nulo_no_cero(
+        self, leaderboard: pd.DataFrame
+    ) -> None:
+        # "No tiene parametros que ajustar" (baselines, statsforecast) es
+        # distinto de "tiene cero parametros", y el leaderboard tiene que poder
+        # distinguirlo.
+        flojo = leaderboard[leaderboard["model_id"] == "flojo"]
+        assert flojo["n_params"].isna().all()
+
+    def test_n_params_sobrevive_al_parquet_como_entero_anulable(self, tmp_path: Path) -> None:
+        destino = tmp_path / "leaderboard.parquet"
+        build_leaderboard(_result(), _panel(), quantiles=QUANTILES, path=destino)
+
+        releido = pd.read_parquet(destino)
+
+        assert releido["n_params"].dtype == "Int64"
+        assert releido.loc[releido["model_id"] == "exacto", "n_params"].eq(10).all()
+        assert releido.loc[releido["model_id"] == "flojo", "n_params"].isna().all()
 
 
 class TestPersistencia:

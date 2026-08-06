@@ -51,6 +51,7 @@ con configuracion propia vive en `chronolab.config`, que todavia no la ofrece.
 """
 
 _TIMING_COLUMNS: tuple[str, ...] = (
+    "n_params",
     "fit_seconds_total",
     "fit_seconds_mean",
     "predict_seconds_total",
@@ -61,6 +62,14 @@ _TIMING_COLUMNS: tuple[str, ...] = (
     "n_windows_skipped",
     "is_zero_shot",
 )
+"""Columnas del eje **precision-coste**, tan importante como la precision sola.
+
+`n_params` va el primero a proposito: es la medida de tamano del modelo, y sin
+ella un LSTM de cinco mil parametros y un transformer de medio millon se leen
+igual en una tabla ordenada por MASE. Es `Int64` (entero anulable) porque los
+modelos sin parametros ajustados por optimizacion —baselines, statsforecast—
+declaran `None`, y eso es distinto de declarar cero.
+"""
 
 
 def select_stage(
@@ -301,9 +310,13 @@ def _with_timings(
         for model_id, group in runs.groupby("model_id", sort=True)
     ]
     timings = pd.DataFrame(rows, columns=["model_id", *_TIMING_COLUMNS])
+    # `Int64` y no `int64`: un modelo sin parametros ajustados por optimizacion
+    # declara `None`, que es distinto de cero y tiene que sobrevivir al parquet.
+    timings["n_params"] = timings["n_params"].astype("Int64")
 
     if frame.empty:
-        return pd.DataFrame(columns=[*_LEADERBOARD_HEAD, *_TIMING_COLUMNS])
+        empty = pd.DataFrame(columns=[*_LEADERBOARD_HEAD, *_TIMING_COLUMNS])
+        return empty.astype({"n_params": "Int64"})
 
     merged = frame.merge(timings, on="model_id", how="left")
     ordered = [
@@ -341,15 +354,23 @@ def _timing_row(runs: pd.DataFrame) -> dict[str, object]:
     Returns
     -------
     dict
-        Totales y medias de coste, recuento de ventanas por estado y la marca de
-        zero-shot. `fit_seconds_mean` promedia **solo las ventanas en las que
-        hubo ajuste**: incluir las reutilizadas diluiria el coste real de
-        entrenar por la politica de refit, que es un parametro del plan y no una
-        propiedad del modelo.
+        Totales y medias de coste, tamano del modelo, recuento de ventanas por
+        estado y la marca de zero-shot. `fit_seconds_mean` promedia **solo las
+        ventanas en las que hubo ajuste**: incluir las reutilizadas diluiria el
+        coste real de entrenar por la politica de refit, que es un parametro
+        del plan y no una propiedad del modelo.
+
+        `n_params` se toma del **maximo** sobre las ventanas, no de la media:
+        es una propiedad de la arquitectura, identica en todas las ventanas de
+        un mismo modelo, y el maximo ignora limpiamente las ventanas fallidas o
+        saltadas, que lo dejan a nulo. Queda nulo, y no cero, para los modelos
+        que no tienen parametros ajustados por optimizacion.
     """
     refits = runs[runs["refit"]]
     ok = runs[runs["status"] == "ok"]
+    params = runs["n_params"].dropna() if "n_params" in runs.columns else pd.Series(dtype="Int64")
     return {
+        "n_params": int(params.max()) if not params.empty else None,
         "fit_seconds_total": float(runs["fit_seconds"].sum()),
         "fit_seconds_mean": float(refits["fit_seconds"].mean()) if not refits.empty else np.nan,
         "predict_seconds_total": float(runs["predict_seconds"].sum()),
