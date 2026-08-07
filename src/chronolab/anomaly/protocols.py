@@ -37,8 +37,27 @@ class ScoringFrame:
     Attributes
     ----------
     df
-        ``unique_id``, ``ds``, ``y``, ``y_hat``, columnas de cuantil y,
-        opcionalmente, las exogenas del panel. Rejilla completa y ordenada.
+        ``unique_id``, ``ds``, ``y``, ``y_hat``, columnas de cuantil, ``cutoff``,
+        ``h_step`` y, opcionalmente, las exogenas del panel. Rejilla completa y
+        ordenada.
+
+        `cutoff` y `h_step` viajan aunque sean derivables de la tabla `windows`,
+        por la misma razon por la que `cutoff` esta desnormalizado en
+        `forecasts` (docs/ARCHITECTURE.md §7.5), y porque son las dos cosas que
+        un detector calibrado necesita estructuralmente:
+
+        - `h_step` da el **adelanto**, que es el determinante de primer orden de
+          la escala del residuo. Un residuo a un paso y otro a veinticuatro no
+          son intercambiables, y mezclarlos produce un intervalo demasiado ancho
+          al principio del horizonte y demasiado estrecho al final.
+        - `cutoff` da la **frontera de informacion** del residuo: el instante en
+          que la prediccion se emitio y, por tanto, el ultimo instante cuya
+          observacion pudo entrar en la banda. Sin el, un detector en linea se
+          actualizaria con realimentacion que todavia no existia.
+
+        Donde el modelo fallo o se salto una ventana, la rejilla se completa con
+        `NaN` explicito y `cutoff` es `NaT`: un hueco tiene que poder
+        distinguirse de un instante no evaluado (invariante I3).
     spec
         Especificacion del panel del que procede.
     model_id
@@ -156,6 +175,29 @@ class FittedDetector(Protocol):
                 ``False`` en el calentamiento, es decir en los primeros
                 ``requires.window - 1`` puntos, o donde ``y`` es ``NaN``. Donde es
                 ``False``, ``score`` es ``NaN``.
+
+            Un detector **calibrado** anade ademas estas tres, que son ``NaN``
+            —o cero, en las enteras— donde ``scorable`` es ``False``. Un detector
+            sin nocion de umbral calibrado, como Matrix Profile, no las emite:
+
+            ``severity`` : float32
+                Cuanto se sale la observacion del intervalo, normalizado por el
+                ancho del intervalo, medido al nivel de referencia declarado por
+                el detector. Negativo dentro, cero en el borde, ``1.0`` cuando la
+                observacion se sale un ancho completo. A diferencia de ``score``
+                no esta acotado, y es lo que ordena la cola donde ``score``
+                satura y lo que agrega `anomaly.events`.
+            ``calib_n`` : int32
+                Tamano del grupo de calibracion con el que se puntuo ese punto.
+                Se persiste por el mismo motivo que el denominador de MASE
+                (docs/ARCHITECTURE.md D17): el numero que sostiene la garantia
+                tiene que ser auditable desde la app, no una afirmacion de un
+                documento.
+            ``side`` : int8
+                ``+1`` si la observacion queda por el lado alto del intervalo,
+                ``-1`` por el bajo, ``0`` donde no es puntuable. Lo necesita
+                `anomaly.events` para separar un pico de consumo de una caida,
+                que son incidentes operativamente distintos.
 
         Raises
         ------

@@ -169,13 +169,24 @@ panel          →  types, errors, data.schemas
 data           →  panel, types, config
 features       →  panel, types
 models         →  panel, features, types
-anomaly        →  panel, types, artifacts.reader
+anomaly        →  panel, types, artifacts.reader, data.calendar
 evaluation     →  panel, models, anomaly, artifacts.writer, features
-artifacts      →  panel, types, config
+artifacts      →  panel, types, config, anomaly.protocols
 viz            →  types                      (solo DataFrames y Figure)
 app            →  artifacts.reader, viz, config, types
 api            →  artifacts.reader, config, types
 ```
+
+Las dos aristas finas, y por qué existen:
+
+- **`artifacts → anomaly.protocols`.** D12 exige que `artifacts.reader` sea el único
+  constructor de `ScoringFrame`, y ese tipo vive en `anomaly.protocols`. Sin la arista, D12
+  no es implementable. No introduce ciclo: `anomaly.protocols` solo importa `panel` y
+  `types`, y es el único módulo de `anomaly` que `artifacts` puede tocar.
+- **`anomaly → data.calendar`.** La calibración condicional del detector conformal agrupa
+  por **hora local**, y `data/calendar.py` es el módulo que el proyecto designa como único
+  sitio donde conviven UTC y hora local. La alternativa —rederivar la conversión dentro de
+  `anomaly/`— crearía el segundo, que es exactamente lo que esa designación evita.
 
 Las dos prohibiciones que importan y por qué:
 
@@ -872,8 +883,18 @@ class ScoringFrame:
     Attributes
     ----------
     df
-        ``unique_id``, ``ds``, ``y``, ``y_hat``, columnas ``q_*`` y, opcionalmente,
-        las exógenas del panel. Rejilla completa (I3), ordenada (I4).
+        ``unique_id``, ``ds``, ``y``, ``y_hat``, columnas ``q_*``, ``cutoff``,
+        ``h_step`` y, opcionalmente, las exógenas del panel. Rejilla completa (I3),
+        ordenada (I4).
+
+        ``cutoff`` y ``h_step`` viajan aunque sean derivables de ``windows``, por la
+        misma razón por la que ``cutoff`` está desnormalizado en ``forecasts`` (§7.5).
+        Son las dos cosas que un detector calibrado necesita estructuralmente:
+        ``h_step`` da el **adelanto**, determinante de primer orden de la escala del
+        residuo, y ``cutoff`` da la **frontera de información** de esa banda, es decir
+        hasta qué instante pudo realimentarse un detector en línea. Donde el modelo
+        falló o se saltó una ventana, la rejilla se completa con ``NaN`` y ``cutoff``
+        es ``NaT``.
     model_id
         Modelo del que provienen ``y_hat`` y los cuantiles. ``None`` para
         detectores que no usan predicción; forma parte del ``detector_id`` efectivo
@@ -961,6 +982,17 @@ class FittedDetector(Protocol):
             ``scorable`` : bool
                 ``False`` en el calentamiento (primeros ``window - 1`` puntos) o
                 donde ``y`` es ``NaN``. Donde es ``False``, ``score`` es ``NaN``.
+
+            Un detector **calibrado** añade además ``severity`` (float32, cuánto se sale
+            la observación del intervalo normalizado por su ancho, al nivel de referencia
+            declarado por el detector), ``calib_n`` (int32, tamaño del grupo de calibración
+            que sostiene la garantía en ese punto) y ``side`` (int8, ``+1``/``-1``/``0``).
+            Un detector sin noción de umbral calibrado, como MatrixProfile, no las emite.
+
+            ``score`` está calibrado pero **satura** en ``log10(calib_n + 1)``: con
+            ``n`` puntos de calibración no hay información para distinguir severidades
+            más allá de eso. ``severity`` no está acotado y es lo que ordena esa cola.
+            Regla de comparación: ordenar por ``score`` y desempatar por ``severity``.
 
         Raises
         ------
@@ -1338,7 +1370,15 @@ puedo descartar", en lugar de 66 tests sueltos.
 | `ds` | `timestamp[ns]` | |
 | `score` | `float32` | Mayor = más anómalo. Ordinal dentro de (detector, serie) |
 | `scorable` | `bool` | `False` en calentamiento o donde `y` es `NaN` |
+| `severity` | `float32` \| `null` | Salida del intervalo en anchos de intervalo. Solo detectores calibrados |
+| `calib_n` | `int32` \| `null` | Tamaño del grupo de calibración usado en ese punto |
+| `side` | `int8` \| `null` | `+1` por arriba, `-1` por abajo, `0` si no puntuable |
 | `base_model_id` | `string` \| `null` | Modelo del que salieron los residuos, si aplica |
+
+`calib_n` se persiste por el mismo motivo que `mase_denominator` (D17): el número que
+sostiene la garantía tiene que ser auditable desde la app, no una afirmación de un
+documento. Un score calibrado sobre 40 puntos y otro sobre 3.000 no valen lo mismo, y sin
+esta columna nada lo diría.
 
 #### `anomaly_thresholds.parquet`
 
@@ -1377,12 +1417,31 @@ Que sea una tabla aparte es lo que permite evaluar detectores nuevos sin regener
 | `alpha` | `float32` | α con el que se derivó |
 | `start_ds`, `end_ds` | `timestamp[ns]` | Extremos inclusivos |
 | `n_points` | `int32` | Puntos marcados |
+| `duration_steps` | `int32` | Pasos de rejilla de `start_ds` a `end_ds`, ambos inclusive |
 | `peak_score` | `float32` | Máximo del score en el evento |
+| `peak_severity` | `float32` | Máxima salida del intervalo, en anchos de intervalo |
+| `cum_severity` | `float32` | Suma de `severity` sobre los puntos marcados: el área fuera de la banda |
+| `peak_ds` | `timestamp[ns]` | Instante del máximo |
+| `direction` | `string` | `over` / `under` / `mixed` |
 | `matched_truth_event_id` | `string` \| `null` | Evento real emparejado, si lo hay |
 | `match_kind` | `string` | `hit` / `false_alarm` / `missed` |
 
 Es la tabla que alimenta directamente la tabla de eventos de la app y la curva
 precisión-recall por tipo de anomalía.
+
+Tres notas que cambian los números:
+
+- **`n_points` y `duration_steps` difieren exactamente cuando hubo fusión** de tiradas
+  separadas por huecos cortos. Esa diferencia es un diagnóstico: dice si el evento fue
+  sólido o intermitente. Sin tolerancia a huecos, un solo punto que vuelve a entrar en la
+  banda parte un evento en dos y hunde la precisión a nivel de evento.
+- **`cum_severity` distingue lo que `peak_severity` no**: una hora muy fuera frente a seis
+  horas ligeramente fuera son incidentes operativamente distintos. Se mide siempre al nivel
+  de referencia del detector, no al `alpha` de la fila, para que dos eventos derivados con
+  alfas distintos sigan siendo comparables.
+- **El emparejamiento es uno a uno.** Un evento real no puede justificar dos detecciones:
+  si se parte en cinco detectados, son un `hit` y cuatro `false_alarm`. Es la restricción
+  que impide reproducir el vicio del *point-adjusted F1*.
 
 #### `explanations.parquet`
 
@@ -1581,7 +1640,16 @@ interno del propio train dentro de `fit`. Separarlo del detector de `anomaly/con
 evita confundir dos cosas distintas: producir intervalos (modelo) y decidir qué cae fuera
 (detector).
 
-**D23 — Un `run` cubre un dataset y un plan de backtesting.** → §7.1.
+**D23 — Un `run` cubre un dataset y un plan de backtesting.** → §7.1
+
+**D24 — El detector conformal se calibra por grupos y se adapta en línea.** → `docs/ANOMALY_DESIGN.md`.
+Cuatro consecuencias normativas: la frontera calibración/puntuación es la frontera
+`dev`/`holdout` que el splitter ya emite, sin parámetro nuevo; un run de detección exige
+plan teselado (`step_size == h`), y `artifacts.reader.scoring_frame` lo detiene si no lo
+es; el score es un p-valor conformal, de modo que el umbral es `-log10(α)` para toda serie
+y todo grupo; y la calibración es de Mondrian por `(serie, hora local, tramo de adelanto)`
+con cadena de repliegue, porque un cuantil global da cobertura marginal correcta y
+condicional desastrosa —un detector que parece calibrado y no lo está—..
 
 ---
 

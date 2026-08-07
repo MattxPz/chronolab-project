@@ -16,7 +16,13 @@ import holidays as holidays_lib
 import numpy as np
 import pandas as pd
 
-__all__ = ["calendar_features", "fourier_terms", "holiday_eve_flags", "holiday_flags"]
+__all__ = [
+    "calendar_features",
+    "fourier_terms",
+    "holiday_eve_flags",
+    "holiday_flags",
+    "local_hour",
+]
 
 _EPOCH = pd.Timestamp("1970-01-01")
 
@@ -31,6 +37,43 @@ def _to_local(ds: pd.Series, *, tz_display: str) -> pd.DatetimeIndex:
     if index.tz is not None:
         raise ValueError("ds debe estar en UTC ingenuo (sin huso horario)")
     return index.tz_localize("UTC").tz_convert(tz_display)
+
+
+def local_hour(ds: pd.Series, *, tz_display: str) -> pd.Series:
+    """Hora del dia local (0-23) de cada marca de tiempo.
+
+    Es la version publica y minima de la conversion que ya hacia
+    `calendar_features`: hay consumidores —la calibracion de Mondrian del
+    detector conformal— que necesitan la hora local y **solo** la hora local, y
+    que no deben rederivarla por su cuenta. Este modulo es el unico sitio del
+    proyecto donde conviven UTC y hora local, y esa propiedad se mantiene
+    exportando la conversion en lugar de duplicandola.
+
+    La direccion UTC -> local es total y no ambigua, tambien en los cambios de
+    hora: la ambigua es la inversa, que es justamente por lo que el invariante
+    I2 almacena UTC ingenuo.
+
+    Parameters
+    ----------
+    ds
+        Columna de tiempo en UTC ingenuo.
+    tz_display
+        Zona horaria de lectura, normalmente ``spec.tz_display``.
+
+    Returns
+    -------
+    pandas.Series
+        Enteros ``int16`` en ``[0, 23]``, con el mismo indice, longitud y orden
+        que `ds`.
+
+    Examples
+    --------
+    >>> ds = pd.Series(pd.to_datetime(["2023-06-01 00:00", "2023-06-01 12:00"]))
+    >>> local_hour(ds, tz_display="Europe/Madrid").tolist()
+    [2, 14]
+    """
+    local = _to_local(ds, tz_display=tz_display)
+    return pd.Series(local.hour.to_numpy().astype(np.int16), index=ds.index, name="hour")
 
 
 def holiday_flags(
