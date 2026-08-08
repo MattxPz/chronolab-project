@@ -191,6 +191,7 @@ module = [
     "shap.*",
     "statsforecast.*",
     "statsmodels.*",
+    "streamlit.*",
     "stumpy.*",
     "torch.*",
     "ulid.*",

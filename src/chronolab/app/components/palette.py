@@ -10,21 +10,20 @@ scores- y no sobre la seleccion vigente del multiselector.
 
 from __future__ import annotations
 
-import streamlit as st
-
 from chronolab.app.components import state
+from chronolab.app.components._caching import cache_data
 from chronolab.viz.plots import model_color_map, series_color_map
 
 __all__ = ["detector_colors", "model_colors", "series_colors"]
 
 
-@st.cache_data(show_spinner=False)
+@cache_data(show_spinner=False)
 def series_colors() -> dict[str, str]:
     """Color fijo por serie, sobre el universo completo de `state.series_options`."""
     return series_color_map(state.series_options())
 
 
-@st.cache_data(show_spinner=False)
+@cache_data(show_spinner=False)
 def model_colors() -> dict[str, str]:
     """Color fijo por modelo, sobre el leaderboard completo (19 modelos).
 
@@ -37,7 +36,7 @@ def model_colors() -> dict[str, str]:
     return model_color_map(state.leaderboard_model_options())
 
 
-@st.cache_data(show_spinner=False)
+@cache_data(show_spinner=False)
 def detector_colors() -> dict[str, str]:
     """Color fijo por detector, sobre el universo completo de `state.detector_options`."""
     return series_color_map(state.detector_options())
