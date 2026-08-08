@@ -198,15 +198,21 @@ module = [
 ]
 ignore_missing_imports = true
 
-# `chronolab.models.torch.modules` declara el `nn.Module` del LSTM propio. En el
-# entorno por defecto de CI (`uv sync` a secas, sin el extra `deep`) `torch` no
-# esta instalado, asi que `nn.Module` se resuelve como `Any` y la regla estricta
+# Los dos modulos que declaran un `nn.Module` propio: el LSTM del forecaster y
+# el autoencoder del detector de anomalias. En el entorno por defecto de CI
+# (`uv sync` a secas, sin el extra `deep`) `torch` no esta instalado, asi que
+# `nn.Module` se resuelve como `Any` y la regla estricta
 # `disallow_subclassing_any` marcaria la definicion de la clase. Relajarla solo
-# en este modulo mantiene el resto de `strict` intacto y hace que el typecheck
+# en estos modulos mantiene el resto de `strict` intacto y hace que el typecheck
 # de por igual con el extra instalado y sin el, que es la propiedad que de
 # verdad importa: los dos entornos existen y los dos tienen que pasar.
+#
+# El fallo solo aparece **sin** el extra, asi que un `uv run mypy` en una maquina
+# con `torch` instalado no lo reproduce. Para comprobarlo en local hace falta
+# forzar que mypy trate `torch` como Any:
+#   mypy --config-file <ini con [mypy-torch.*] follow_imports = skip>
 [[tool.mypy.overrides]]
-module = ["chronolab.models.torch.modules"]
+module = ["chronolab.anomaly.autoencoder", "chronolab.models.torch.modules"]
 disallow_subclassing_any = false
 
 # ---------------------------------------------------------------------------

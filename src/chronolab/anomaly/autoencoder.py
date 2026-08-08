@@ -81,11 +81,18 @@ def _build_net(*, hidden_size: int, latent_size: int) -> Any:
     entrenar y evaluar en paralelo sobre todo el batch.
 
     Importa `torch` por su cuenta -en vez de recibirlo como parametro, como
-    hacen el resto de funciones del modulo- porque es la unica forma de que
-    mypy resuelva `nn.Module` como el tipo real en vez de `Any`: pasarlo
-    disfrazado de parametro pierde esa informacion, igual que documenta
-    `chronolab.models.torch.modules._net_class`, el mismo patron para el LSTM
-    del forecaster.
+    hacen el resto de funciones del modulo- para que la clase se declare contra
+    el `nn.Module` de verdad donde el extra `deep` este instalado. Es el mismo
+    patron que `chronolab.models.torch.modules._net_class`, y como alli, el
+    import vive **dentro** de la funcion: a nivel de modulo romperia
+    `tests/unit/test_module_tree.py`, que importa todo el arbol en el entorno
+    por defecto de CI, donde `torch` no esta.
+
+    Sin el extra, mypy resuelve `nn.Module` como `Any` y `disallow_subclassing_any`
+    marcaria esta linea, asi que el modulo esta en la lista de excepciones de
+    `pyproject.toml`. La consecuencia practica que conviene recordar: **este
+    fallo no lo reproduce un `uv run mypy` local con `torch` instalado**, solo
+    el typecheck de CI.
 
     Parameters
     ----------
