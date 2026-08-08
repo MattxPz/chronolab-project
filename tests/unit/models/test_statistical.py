@@ -330,3 +330,57 @@ class TestConProveedorDeExogenasFuturas:
             panel, [AutoARIMAForecaster(h=H, season_length=SEASON)], plan, futr=provider
         )
         assert (result.model_runs["status"] == "ok").all()
+
+
+class TestHuecosEnLaObjetivo:
+    """`handles_nan_target=False` obliga al adaptador a imputar dentro de `fit`.
+
+    El invariante I3 conserva un hueco como ``y = NaN`` en una fila que si
+    existe, y `mstl` aborta con "cannot handle missing values" en cuanto ve uno.
+    Sin la imputacion del adaptador, un unico hueco en el tramo de
+    entrenamiento no degrada el ajuste: elimina la ventana entera del run.
+    """
+
+    @staticmethod
+    def _panel_con_hueco(*, leading: bool = False) -> Panel:
+        panel = _panel()
+        frame = panel.df.copy()
+        target = panel.spec.target
+        rows = frame.index[frame["unique_id"] == "s0"]
+        frame.loc[rows[:3] if leading else rows[20:26], target] = np.nan
+        return Panel(df=frame, spec=panel.spec)
+
+    @pytest.mark.parametrize("model", _models(), ids=_model_ids())
+    def test_un_hueco_interior_no_tumba_el_ajuste(self, model: Forecaster) -> None:
+        fitted = model.fit(self._panel_con_hueco(), h=H)
+        prediction = fitted.predict()
+        assert len(prediction) == 2 * H
+        assert prediction["y_hat"].notna().all()
+
+    def test_un_hueco_al_principio_tampoco(self) -> None:
+        # El relleno hacia delante no tiene pasado del que tirar en la primera
+        # fila; se cubre con la media del propio tramo de entrenamiento.
+        model = MSTLForecaster(
+            h=H, season_lengths=(SEASON, SEASON * 2), trend_max_p=1, trend_max_q=1
+        )
+        prediction = model.fit(self._panel_con_hueco(leading=True), h=H).predict()
+        assert prediction["y_hat"].notna().all()
+
+    def test_el_relleno_solo_mira_hacia_atras(self) -> None:
+        # La imputacion admisible del proyecto es la retrospectiva: el valor de
+        # un hueco tiene que ser el ultimo observado antes de el, nunca el
+        # siguiente, que en el instante del hueco todavia no existia.
+        from chronolab.models.adapters.statsforecast import _univariate_frame
+
+        frame = _univariate_frame(self._panel_con_hueco())
+        own = frame.loc[frame["unique_id"] == "s0", "y"].to_numpy()
+        assert np.isfinite(own).all()
+        assert (own[20:26] == own[19]).all()
+
+    def test_el_backtest_no_registra_ventanas_fallidas(self) -> None:
+        model = MSTLForecaster(
+            h=H, season_lengths=(SEASON, SEASON * 2), trend_max_p=1, trend_max_q=1
+        )
+        plan = BacktestPlan(h=H, n_windows=2, step_size=H, refit_every=1)
+        result = backtest(self._panel_con_hueco(), [model], plan)
+        assert (result.model_runs["status"] == "ok").all()

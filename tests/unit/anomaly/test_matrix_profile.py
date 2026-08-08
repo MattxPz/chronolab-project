@@ -52,6 +52,13 @@ class TestScore:
         usable = scores.loc[scores["scorable"], "score"]
         assert (usable >= -1e-6).all()
 
+    def test_ds_sale_en_nanosegundos_como_los_demas_detectores(self) -> None:
+        # La union interna la devolvia en microsegundos, y entonces
+        # `common_scorable_mask` no reconocia la rejilla como la misma que la
+        # del resto y la comparativa entre detectores abortaba.
+        scores = MatrixProfileDetector(m=24).fit(CALIB).score(HOLDOUT)
+        assert scores["ds"].dtype == "datetime64[ns]"
+
 
 class TestComparabilidad:
     def test_un_desplazamiento_grande_sube_el_score(self) -> None:

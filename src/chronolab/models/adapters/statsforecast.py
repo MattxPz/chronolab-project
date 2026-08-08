@@ -248,7 +248,47 @@ def _univariate_frame(panel: Panel) -> pd.DataFrame:
     frame = panel.df[["unique_id", "ds", target]]
     if target != "y":
         frame = frame.rename(columns={target: "y"})
-    return frame.reset_index(drop=True)
+    return _impute_target(frame.reset_index(drop=True))
+
+
+def _impute_target(frame: pd.DataFrame) -> pd.DataFrame:
+    """Rellena los huecos de la objetivo antes de entregarla a statsforecast.
+
+    Los cuatro modelos de este modulo declaran ``handles_nan_target=False``, y
+    el contrato de `Forecaster.fit` (docs/ARCHITECTURE.md §5.2) dice que en ese
+    caso **el adaptador imputa dentro de `fit`**. Sin esto, un panel con un
+    hueco —que el invariante I3 conserva como `NaN` explicito, no como fila
+    ausente— hace que `mstl` aborte con "cannot handle missing values" y que el
+    motor registre la ventana como fallida. El resultado no seria un modelo
+    peor sino un tramo entero sin predicciones, y con el sin residuos que
+    puntuar.
+
+    El relleno es hacia delante: mira solo al pasado, que es la unica
+    imputacion admisible del proyecto. Un hueco al principio del tramo no tiene
+    pasado del que tirar y se rellena con la media del propio tramo de
+    entrenamiento; como el motor ya recorto a ``ds <= cutoff``, ese estadistico
+    tampoco puede haber visto el futuro.
+
+    Parameters
+    ----------
+    frame
+        Trama ``unique_id``, ``ds``, ``y`` del tramo de entrenamiento.
+
+    Returns
+    -------
+    pandas.DataFrame
+        La misma trama con `y` sin huecos. Si no habia ninguno se devuelve tal
+        cual, sin copiar.
+    """
+    if not frame["y"].isna().any():
+        return frame
+    filled = frame.copy()
+    filled["y"] = filled.groupby("unique_id", sort=False)["y"].ffill()
+    means = filled.groupby("unique_id", sort=False)["y"].transform("mean")
+    # El `0.0` final cubre una serie sin ninguna observacion en el tramo: su
+    # media es `NaN` y statsforecast seguiria abortando.
+    filled["y"] = filled["y"].fillna(means).fillna(0.0)
+    return filled
 
 
 def _assign_quantiles(

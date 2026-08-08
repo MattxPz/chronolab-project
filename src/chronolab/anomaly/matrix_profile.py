@@ -271,6 +271,11 @@ class FittedMatrixProfileDetector:
         merged = out.merge(computed, on=["unique_id", "ds"], how="left", validate="one_to_one")
         merged["score"] = merged["score"].astype(np.float32)
         merged["scorable"] = merged["scorable"].fillna(False).astype(bool)
+        # `ds` se fija a nanosegundos explicitamente: la union puede devolverla
+        # en otra resolucion, y entonces este detector emitiria una rejilla que
+        # `evaluation.anomaly_metrics.common_scorable_mask` no reconoce como la
+        # misma que la de los demas aunque los instantes sean identicos.
+        merged["ds"] = merged["ds"].astype("datetime64[ns]")
         return merged[list(SCORE_COLUMNS)]
 
 
