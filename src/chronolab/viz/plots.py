@@ -31,6 +31,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 __all__ = [
+    "anomaly_threshold",
     "compute_acf_pacf",
     "compute_degree_days",
     "compute_difficulty_table",
@@ -41,18 +42,27 @@ __all__ = [
     "compute_periodogram",
     "compute_resampled_mean",
     "compute_series_difficulty",
+    "model_color_map",
+    "plot_accuracy_vs_cost",
     "plot_acf_pacf",
+    "plot_anomaly_series",
     "plot_degree_days_correlation",
     "plot_difficulty_table",
+    "plot_dm_heatmap",
     "plot_dst_continuity",
+    "plot_forecast_overlay",
     "plot_holiday_effect",
     "plot_hour_dow_heatmap",
     "plot_monthly_profile",
     "plot_mstl",
     "plot_periodogram",
+    "plot_prediction_decomposition",
     "plot_quality_overview",
+    "plot_residuals",
     "plot_series_with_flags",
     "plot_temperature_scatter",
+    "plot_tft_temporal_attention",
+    "plot_tft_variable_attention",
     "series_color_map",
 ]
 
@@ -86,6 +96,23 @@ STATUS = {
     "serious": "#ec835a",
     "critical": "#d03b3b",
 }
+DIVERGING_RED_BLUE: tuple[str, ...] = (
+    "#8f2020",
+    "#b03030",
+    "#e34948",
+    "#ef8b8a",
+    "#f0efec",
+    "#9ec5f4",
+    "#5598e7",
+    "#2a78d6",
+    "#104281",
+)
+"""Rampa divergente de nueve pasos, centrada en el gris neutro del quinto.
+
+Misma rampa que ya usan las figuras estaticas de `scripts/run_anomaly_eval.py`
+(``09_anomaly_heatmap.png``): un rojo (perder) - azul (ganar) simetrico, para
+estadisticos con signo con cero significativo (Diebold-Mariano) o con un punto
+neutro conocido, nunca para magnitudes sin signo (eso es `SEQUENTIAL_BLUE`)."""
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 INK_MUTED = "#898781"
@@ -119,6 +146,29 @@ def series_color_map(series_ids: Sequence[str]) -> dict[str, str]:
     return {
         series_id: CATEGORICAL[min(i, len(CATEGORICAL) - 1)]
         for i, series_id in enumerate(series_ids)
+    }
+
+
+def model_color_map(model_ids: Sequence[str]) -> dict[str, str]:
+    """Asigna un color categorico fijo a cada modelo, en orden.
+
+    Misma regla que `series_color_map`, sobre la misma paleta: un modelo tiene
+    un unico color en todas las figuras que lo mencionan (Forecast,
+    Leaderboard), y ese color no depende de que otros modelos esten
+    seleccionados en el momento.
+
+    Parameters
+    ----------
+    model_ids
+        Identificadores de modelo, en el orden en que deben tomar color.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapa ``{model_id: color_hex}``.
+    """
+    return {
+        model_id: CATEGORICAL[min(i, len(CATEGORICAL) - 1)] for i, model_id in enumerate(model_ids)
     }
 
 
@@ -1065,5 +1115,513 @@ def plot_difficulty_table(table: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(
         height=90 + 40 * len(table), **_base_layout(title="Estadisticos de dificultad de la serie")
+    )
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# 7. Forecast: prediccion superpuesta, residuos
+# --------------------------------------------------------------------------- #
+
+
+def plot_forecast_overlay(
+    context: pd.DataFrame,
+    forecasts: pd.DataFrame,
+    *,
+    model_colors: Mapping[str, str],
+    quantile_low: str = "q_0250",
+    quantile_high: str = "q_9750",
+    show_bands: bool = True,
+    unique_id: str | None = None,
+) -> go.Figure:
+    """Historico mas prediccion de uno o varios modelos, con banda de incertidumbre.
+
+    Parameters
+    ----------
+    context
+        Tramo previo al cutoff de **una sola serie**, columnas ``ds`` e ``y``.
+        Se dibuja en gris neutro: es lo que el modelo pudo ver, no lo que se
+        evalua.
+    forecasts
+        Filas de `chronolab.artifacts.reader.load_forecasts`, ya filtradas a
+        una serie y a los modelos a mostrar. Columnas ``model_id``, ``ds``,
+        ``y_hat`` y, si estan, ``y`` (el valor real del tramo evaluado, igual
+        para todos los modelos) y las columnas de cuantil.
+    model_colors
+        Mapa ``{model_id: color}``, de `model_color_map`. Un modelo conserva
+        su color aunque se quiten o anadan otros del multiselector.
+    quantile_low, quantile_high
+        Columnas de `forecasts` que delimitan la banda sombreada. Si faltan
+        para un modelo (no soporta cuantiles), ese modelo se dibuja sin banda,
+        nunca con una inventada.
+    show_bands
+        Conmutador de la banda de incertidumbre.
+    unique_id
+        Identificador de la serie, solo para el titulo.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    fig = go.Figure()
+    ordered_context = context.sort_values("ds")
+    fig.add_scatter(
+        x=ordered_context["ds"],
+        y=ordered_context["y"],
+        mode="lines",
+        line={"width": 1.5, "color": INK_MUTED},
+        name="Historico",
+        connectgaps=False,
+    )
+
+    if "y" in forecasts.columns and not forecasts.empty:
+        actual = forecasts[["ds", "y"]].drop_duplicates(subset="ds").sort_values("ds")
+        fig.add_scatter(
+            x=actual["ds"],
+            y=actual["y"],
+            mode="lines",
+            line={"width": 2.2, "color": INK_PRIMARY},
+            name="Real (evaluado)",
+        )
+
+    for model_id, group in forecasts.groupby("model_id", sort=False):
+        color = model_colors.get(str(model_id), INK_MUTED)
+        ordered = group.sort_values("ds")
+        has_band = quantile_low in ordered.columns and quantile_high in ordered.columns
+        if show_bands and has_band and ordered[quantile_low].notna().any():
+            fig.add_scatter(
+                x=ordered["ds"],
+                y=ordered[quantile_high],
+                mode="lines",
+                line={"width": 0},
+                showlegend=False,
+                hoverinfo="skip",
+            )
+            fig.add_scatter(
+                x=ordered["ds"],
+                y=ordered[quantile_low],
+                mode="lines",
+                line={"width": 0},
+                fill="tonexty",
+                fillcolor=_hex_to_rgba(color, 0.18),
+                showlegend=False,
+                hoverinfo="skip",
+                name=f"{model_id}: banda",
+            )
+        fig.add_scatter(
+            x=ordered["ds"],
+            y=ordered["y_hat"],
+            mode="lines+markers",
+            line={"width": 2, "color": color, "dash": "dot"},
+            marker={"size": 5, "color": color},
+            name=str(model_id),
+        )
+
+    title = (
+        f"{unique_id}: prediccion frente a historico"
+        if unique_id
+        else "Prediccion frente a historico"
+    )
+    fig.update_layout(**_base_layout(title=title, yaxis_title="y"))
+    return fig
+
+
+def plot_residuals(forecasts: pd.DataFrame, *, model_colors: Mapping[str, str]) -> go.Figure:
+    """Residuo (real menos prediccion) por instante, un color por modelo.
+
+    Parameters
+    ----------
+    forecasts
+        Filas con ``model_id``, ``ds``, ``y`` y ``y_hat``. La resta ocurre
+        aqui, sobre columnas ya persistidas por el backtest -no es una metrica
+        nueva, es la misma que dibuja cualquier grafico de residuos.
+    model_colors
+        Mapa ``{model_id: color}``, de `model_color_map`.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    fig = go.Figure()
+    fig.add_hline(y=0, line={"color": BASELINE, "width": 1})
+    for model_id, group in forecasts.groupby("model_id", sort=False):
+        ordered = group.sort_values("ds")
+        color = model_colors.get(str(model_id), INK_MUTED)
+        fig.add_scatter(
+            x=ordered["ds"],
+            y=ordered["y"] - ordered["y_hat"],
+            mode="markers",
+            marker={"size": 6, "color": color, "opacity": 0.75},
+            name=str(model_id),
+        )
+    fig.update_layout(**_base_layout(title="Residuos (real - prediccion)", yaxis_title="y - y_hat"))
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# 8. Leaderboard: precision vs coste, Diebold-Mariano
+# --------------------------------------------------------------------------- #
+
+
+def plot_accuracy_vs_cost(
+    leaderboard: pd.DataFrame,
+    *,
+    model_colors: Mapping[str, str],
+    x_column: str = "fit_seconds_total",
+    y_column: str = "mase",
+) -> go.Figure:
+    """Dispersión precision (eje y, mas bajo es mejor) frente a coste (eje x, log).
+
+    Parameters
+    ----------
+    leaderboard
+        Una fila por modelo (ya filtrada a una etapa y a la agregacion sobre
+        todas las series, ``unique_id`` nulo). Columnas ``model_id``,
+        `x_column` e `y_column`.
+    model_colors
+        Mapa ``{model_id: color}``, de `model_color_map`.
+    x_column, y_column
+        Columnas de coste y de precision a graficar.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    fig = go.Figure()
+    safe_x = leaderboard[x_column].clip(lower=1e-3)
+    for (_, row), x in zip(leaderboard.iterrows(), safe_x, strict=True):
+        model_id = str(row["model_id"])
+        color = model_colors.get(model_id, INK_MUTED)
+        fig.add_scatter(
+            x=[x],
+            y=[row[y_column]],
+            mode="markers+text",
+            marker={"size": 14, "color": color, "line": {"width": 2, "color": SURFACE}},
+            text=[model_id],
+            textposition="top center",
+            textfont={"size": 10, "color": INK_SECONDARY},
+            name=model_id,
+            showlegend=False,
+            hovertemplate=f"{model_id}<br>{x_column}=%{{x:.3g}}s<br>{y_column}=%{{y:.4f}}<extra></extra>",
+        )
+    fig.update_xaxes(type="log", title_text=f"{x_column} (s, escala log)")
+    fig.update_layout(
+        **_base_layout(title="Precision frente a coste computacional", yaxis_title=y_column.upper())
+    )
+    return fig
+
+
+def plot_dm_heatmap(dm_matrix: pd.DataFrame) -> go.Figure:
+    """Matriz de estadisticos de Diebold-Mariano, un color por signo y magnitud.
+
+    Parameters
+    ----------
+    dm_matrix
+        Salida de `chronolab.artifacts.reader.load_dm_matrix`: una fila por
+        pareja ordenada ``(model_a, model_b)`` con ``stat`` y ``p_value``.
+        Negativo en la celda ``(fila, columna)`` significa que el modelo de la
+        fila pierde menos que el de la columna (`chronolab.evaluation.stats_tests.DMResult`).
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        Heatmap con la rampa `DIVERGING_RED_BLUE`, centrado en cero, y el
+        estadistico mas el p-valor anotados en cada celda.
+    """
+    models = sorted(set(dm_matrix["model_a"].astype(str)) | set(dm_matrix["model_b"].astype(str)))
+    slot = {model: i for i, model in enumerate(models)}
+    stat = np.zeros((len(models), len(models)))
+    text = np.full((len(models), len(models)), "-", dtype=object)
+
+    for row in dm_matrix.itertuples(index=False):
+        i, j = slot[str(row.model_a)], slot[str(row.model_b)]
+        stat_value = float(row.stat)  # type: ignore[arg-type]
+        stat[i, j] = stat_value
+        p_value = row.p_value
+        text[i, j] = (
+            f"{stat_value:.2f}<br>p={float(p_value):.3f}"  # type: ignore[arg-type]
+            if pd.notna(p_value)
+            else "n/d"
+        )
+
+    bound = float(np.nanmax(np.abs(stat))) if models else 1.0
+    bound = bound if bound > 0 else 1.0
+    n_steps = len(DIVERGING_RED_BLUE)
+    colorscale = [[i / (n_steps - 1), color] for i, color in enumerate(DIVERGING_RED_BLUE)]
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=stat,
+            x=models,
+            y=models,
+            colorscale=colorscale,
+            zmid=0,
+            zmin=-bound,
+            zmax=bound,
+            text=text,
+            texttemplate="%{text}",
+            textfont={"size": 10, "color": INK_PRIMARY},
+            colorbar={
+                "title": {"text": "Estadistico DM"},
+                "outlinewidth": 0,
+                "tickfont": {"color": INK_MUTED},
+            },
+            hovertemplate="fila %{y} vs columna %{x}: stat=%{z:.3f}<extra></extra>",
+        )
+    )
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(**_base_layout(title="Diebold-Mariano: significancia por pareja de modelos"))
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# 9. Anomalias: serie marcada, umbral sobre scores ya calculados
+# --------------------------------------------------------------------------- #
+
+
+def anomaly_threshold(alpha: float) -> float:
+    """Umbral de score correspondiente a un nivel alfa.
+
+    Los cuatro detectores del hito de anomalias emiten ``-log10(p)`` como
+    score (``scripts/run_anomaly_eval.py``), asi que el mismo umbral
+    ``-log10(alpha)`` es comparable entre ellos: no es una eleccion de este
+    modulo, es una propiedad de diseno de los detectores que aqui solo se
+    expresa. Recalcularlo sobre scores ya calculados -sin volver a puntuar
+    nada- es exactamente lo que permite mover el slider de alfa (A5).
+
+    Parameters
+    ----------
+    alpha
+        Nivel de significancia, en ``(0, 1)``.
+
+    Returns
+    -------
+    float
+        Umbral: un score ``>=`` este valor se marca como anomalia.
+
+    Raises
+    ------
+    ValueError
+        Si `alpha` no esta en ``(0, 1)``.
+    """
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha debe estar en (0, 1): {alpha}")
+    return float(-np.log10(alpha))
+
+
+def plot_anomaly_series(
+    series: pd.DataFrame,
+    scores: pd.DataFrame,
+    truth: pd.DataFrame,
+    *,
+    threshold: float,
+    color: str,
+    unique_id: str,
+) -> go.Figure:
+    """Serie con los eventos reales sombreados y los puntos marcados por el detector.
+
+    Parameters
+    ----------
+    series
+        Trama de **una sola serie**, columnas ``ds`` e ``y``.
+    scores
+        Scores de **un solo detector** sobre esa serie: columnas ``ds``,
+        ``score`` y ``scorable``.
+    truth
+        Subconjunto de `chronolab.artifacts.reader.load_anomaly_truth` para
+        esa serie. Puede estar vacio (serie sin anomalias inyectadas).
+    threshold
+        Umbral vigente, de `anomaly_threshold`. Un punto se marca si
+        ``scorable`` y ``score >= threshold``.
+    color
+        Color de la linea de la serie, tipicamente de `series_color_map`.
+    unique_id
+        Identificador de la serie, para el titulo.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    ordered = series.sort_values("ds")
+    fig = go.Figure()
+
+    for _, group in truth.groupby("event_id"):
+        fig.add_vrect(
+            x0=group["ds"].min(),
+            x1=group["ds"].max() + pd.Timedelta(hours=1),
+            fillcolor=_hex_to_rgba(STATUS["warning"], 0.16),
+            line_width=0,
+            layer="below",
+        )
+
+    fig.add_scatter(
+        x=ordered["ds"],
+        y=ordered["y"],
+        mode="lines",
+        line={"width": 1.5, "color": color},
+        name=unique_id,
+        connectgaps=False,
+    )
+
+    merged = scores.merge(ordered[["ds", "y"]], on="ds", how="inner")
+    flagged = merged.loc[merged["scorable"].fillna(False) & (merged["score"] >= threshold)]
+    if len(flagged):
+        fig.add_scatter(
+            x=flagged["ds"],
+            y=flagged["y"],
+            mode="markers",
+            marker={
+                "size": 9,
+                "color": STATUS["critical"],
+                "symbol": "x",
+                "line": {"width": 1.5, "color": SURFACE},
+            },
+            name=f"Marcado (score >= {threshold:.2f})",
+        )
+
+    fig.update_layout(
+        **_base_layout(title=f"{unique_id}: serie con anomalias marcadas", yaxis_title="y")
+    )
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# 10. Explicabilidad: atencion del TFT, descomposicion de la prediccion
+# --------------------------------------------------------------------------- #
+
+
+def plot_tft_variable_attention(table: pd.DataFrame) -> go.Figure:
+    """Peso de atencion por variable de entrada, agrupado por bloque pasado/futuro.
+
+    Parameters
+    ----------
+    table
+        Salida de `chronolab.artifacts.reader.load_tft_interpretability`,
+        restringida internamente a ``kind == "attention_variable"``.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    variable = table.loc[table["kind"] == "attention_variable"].dropna(subset=["feature", "block"])
+    blocks = sorted(variable["block"].unique())
+    block_labels = {"past": "Pasado", "future": "Futuro"}
+    colors = {block: CATEGORICAL[i] for i, block in enumerate(blocks)}
+
+    fig = go.Figure()
+    for block in blocks:
+        sub = variable.loc[variable["block"] == block].sort_values("value")
+        fig.add_bar(
+            x=sub["value"],
+            y=sub["feature"],
+            orientation="h",
+            name=block_labels.get(block, block),
+            marker_color=colors[block],
+            marker_line_width=0,
+        )
+    fig.update_layout(
+        barmode="group",
+        **_base_layout(title="Importancia de variables (atencion del TFT)", xaxis_title="Peso"),
+    )
+    return fig
+
+
+def plot_tft_temporal_attention(table: pd.DataFrame) -> go.Figure:
+    """Peso de atencion temporal a lo largo de la ventana de contexto y horizonte.
+
+    Parameters
+    ----------
+    table
+        Salida de `chronolab.artifacts.reader.load_tft_interpretability`,
+        restringida internamente a ``kind == "attention_temporal"``.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        El paso ``0`` (linea vertical punteada) es el cutoff: a la izquierda,
+        contexto observado; a la derecha, horizonte de prediccion.
+    """
+    temporal = table.loc[table["kind"] == "attention_temporal"].dropna(subset=["offset"])
+    temporal = temporal.sort_values("offset")
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=temporal["offset"],
+        y=temporal["value"],
+        mode="lines",
+        line={"width": 2, "color": CATEGORICAL[0]},
+        fill="tozeroy",
+        fillcolor=_hex_to_rgba(CATEGORICAL[0], 0.18),
+        showlegend=False,
+    )
+    fig.add_vline(
+        x=0,
+        line={"color": INK_MUTED, "width": 1, "dash": "dot"},
+        annotation_text="cutoff",
+        annotation_font={"color": INK_SECONDARY, "size": 11},
+    )
+    fig.update_layout(
+        **_base_layout(
+            title="Atencion temporal (TFT)",
+            xaxis_title="Paso relativo al cutoff",
+            yaxis_title="Peso de atencion",
+        )
+    )
+    return fig
+
+
+def plot_prediction_decomposition(
+    components: pd.DataFrame, *, unique_id: str, ds: pd.Timestamp
+) -> go.Figure:
+    """Descompone el valor observado de un instante en tendencia, estacionales y residuo.
+
+    Parameters
+    ----------
+    components
+        Salida de `chronolab.artifacts.reader.load_mstl_components`,
+        restringida a una sola serie.
+    unique_id
+        Identificador de la serie, para el titulo.
+    ds
+        Instante a descomponer. Debe existir en ``components["ds"]``.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        Cascada: cada barra es la contribucion de un componente, la ultima es
+        el total observado.
+
+    Raises
+    ------
+    KeyError
+        Si `ds` no esta en `components`.
+    """
+    row = components.loc[components["ds"] == pd.Timestamp(ds)]
+    if row.empty:
+        raise KeyError(f"'{ds}' no esta en la descomposicion de '{unique_id}'")
+    values = row.iloc[0]
+
+    fig = go.Figure(
+        go.Waterfall(
+            x=["Tendencia", "Estacional (24h)", "Estacional (168h)", "Residuo", "Observado"],
+            measure=["relative", "relative", "relative", "relative", "total"],
+            y=[
+                values["trend"],
+                values["seasonal_24"],
+                values["seasonal_168"],
+                values["resid"],
+                0,
+            ],
+            increasing={"marker": {"color": CATEGORICAL[2]}},
+            decreasing={"marker": {"color": CATEGORICAL[7]}},
+            totals={"marker": {"color": INK_PRIMARY}},
+            connector={"line": {"color": BASELINE}},
+        )
+    )
+    fig.update_layout(
+        **_base_layout(
+            title=f"{unique_id}: descomposicion de la prediccion en {pd.Timestamp(ds)}",
+            yaxis_title="y",
+        )
     )
     return fig

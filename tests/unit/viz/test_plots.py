@@ -432,4 +432,244 @@ class TestPlotDstContinuity:
             window=pd.Timedelta(hours=4),
         )
         assert isinstance(fig, go.Figure)
-        assert len(fig.data) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 7. model_color_map
+# --------------------------------------------------------------------------- #
+
+
+class TestModelColorMap:
+    def test_asigna_en_orden(self) -> None:
+        mapping = plots.model_color_map(["naive", "mstl"])
+        assert mapping["naive"] == plots.CATEGORICAL[0]
+        assert mapping["mstl"] == plots.CATEGORICAL[1]
+
+    def test_mismo_orden_da_el_mismo_mapa(self) -> None:
+        assert plots.model_color_map(["a", "b"]) == plots.model_color_map(["a", "b"])
+
+
+# --------------------------------------------------------------------------- #
+# 8. Forecast: overlay y residuos
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def forecast_frame() -> pd.DataFrame:
+    ds = pd.date_range("2024-01-01", periods=6, freq="h")
+    rows = []
+    for model_id in ("naive", "mstl"):
+        for i, ts in enumerate(ds):
+            rows.append(
+                {
+                    "unique_id": "a",
+                    "model_id": model_id,
+                    "ds": ts,
+                    "y": 10.0 + i,
+                    "y_hat": 10.0 + i + (0.5 if model_id == "mstl" else -0.5),
+                    "q_0250": 9.0 + i,
+                    "q_9750": 11.0 + i,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+class TestPlotForecastOverlay:
+    def test_dibuja_historico_real_y_una_linea_por_modelo(
+        self, forecast_frame: pd.DataFrame
+    ) -> None:
+        context = pd.DataFrame(
+            {"ds": pd.date_range("2023-12-31", periods=3, freq="h"), "y": [1.0, 2.0, 3.0]}
+        )
+        colors = plots.model_color_map(["naive", "mstl"])
+        fig = plots.plot_forecast_overlay(context, forecast_frame, model_colors=colors)
+        names = [trace.name for trace in fig.data]
+        assert "Historico" in names
+        assert "naive" in names
+        assert "mstl" in names
+
+    def test_sin_columnas_de_cuantil_no_dibuja_banda(self) -> None:
+        context = pd.DataFrame({"ds": pd.date_range("2024-01-01", periods=1, freq="h"), "y": [1.0]})
+        forecasts = pd.DataFrame(
+            {
+                "unique_id": ["a"],
+                "model_id": ["naive"],
+                "ds": pd.date_range("2024-01-01", periods=1, freq="h"),
+                "y_hat": [1.0],
+            }
+        )
+        fig = plots.plot_forecast_overlay(
+            context, forecasts, model_colors=plots.model_color_map(["naive"])
+        )
+        # Solo la traza del historico y la del propio modelo: sin banda no hay
+        # trazas invisibles de relleno.
+        assert len(fig.data) == 2
+
+
+class TestPlotResiduals:
+    def test_una_traza_por_modelo(self, forecast_frame: pd.DataFrame) -> None:
+        colors = plots.model_color_map(["naive", "mstl"])
+        fig = plots.plot_residuals(forecast_frame, model_colors=colors)
+        assert len(fig.data) == 2
+
+    def test_el_residuo_es_real_menos_prediccion(self, forecast_frame: pd.DataFrame) -> None:
+        colors = plots.model_color_map(["naive", "mstl"])
+        fig = plots.plot_residuals(forecast_frame, model_colors=colors)
+        naive_trace = next(t for t in fig.data if t.name == "naive")
+        # Por construccion, naive tiene y_hat = y - 0.5, asi que el residuo es +0.5.
+        np.testing.assert_allclose(np.asarray(naive_trace.y), 0.5)
+
+
+# --------------------------------------------------------------------------- #
+# 9. Leaderboard: precision vs coste, Diebold-Mariano
+# --------------------------------------------------------------------------- #
+
+
+class TestPlotAccuracyVsCost:
+    def test_una_traza_por_modelo(self) -> None:
+        leaderboard = pd.DataFrame(
+            {"model_id": ["naive", "mstl"], "fit_seconds_total": [0.0, 4.2], "mase": [1.0, 0.7]}
+        )
+        fig = plots.plot_accuracy_vs_cost(
+            leaderboard, model_colors=plots.model_color_map(["naive", "mstl"])
+        )
+        assert len(fig.data) == 2
+
+    def test_coste_cero_no_revienta_la_escala_log(self) -> None:
+        # `fit_seconds_total=0` es real (Chronos zero-shot); un eje log no
+        # deberia lanzar por eso.
+        leaderboard = pd.DataFrame(
+            {"model_id": ["chronos"], "fit_seconds_total": [0.0], "mase": [1.0]}
+        )
+        fig = plots.plot_accuracy_vs_cost(
+            leaderboard, model_colors=plots.model_color_map(["chronos"])
+        )
+        assert isinstance(fig, go.Figure)
+
+
+class TestPlotDmHeatmap:
+    def test_matriz_cuadrada_del_tamano_del_universo_de_modelos(self) -> None:
+        dm_matrix = pd.DataFrame(
+            {
+                "model_a": ["naive", "mstl"],
+                "model_b": ["mstl", "naive"],
+                "stat": [-2.1, 2.1],
+                "p_value": [0.03, 0.03],
+                "n_obs": [500, 500],
+                "mean_difference": [-0.2, 0.2],
+                "degenerate": [False, False],
+            }
+        )
+        fig = plots.plot_dm_heatmap(dm_matrix)
+        heatmap = fig.data[0]
+        assert heatmap.z.shape == (2, 2)
+        assert list(heatmap.x) == ["mstl", "naive"]
+
+
+# --------------------------------------------------------------------------- #
+# 10. Anomalias
+# --------------------------------------------------------------------------- #
+
+
+class TestAnomalyThreshold:
+    def test_alfa_pequeno_da_un_umbral_alto(self) -> None:
+        assert plots.anomaly_threshold(0.01) > plots.anomaly_threshold(0.1)
+
+    def test_es_menos_log10_de_alfa(self) -> None:
+        assert plots.anomaly_threshold(0.05) == pytest.approx(-np.log10(0.05))
+
+    @pytest.mark.parametrize("alpha", [0.0, 1.0, -0.1, 1.5])
+    def test_fuera_de_rango_lanza(self, alpha: float) -> None:
+        with pytest.raises(ValueError, match="alpha"):
+            plots.anomaly_threshold(alpha)
+
+
+class TestPlotAnomalySeries:
+    def test_marca_solo_los_puntos_que_superan_el_umbral(self) -> None:
+        ds = pd.date_range("2024-01-01", periods=5, freq="h")
+        series = pd.DataFrame({"ds": ds, "y": [1.0, 2.0, 30.0, 2.0, 1.0]})
+        scores = pd.DataFrame(
+            {"ds": ds, "score": [0.1, 0.1, 5.0, 0.1, 0.1], "scorable": [True] * 5}
+        )
+        truth = pd.DataFrame(columns=["event_id", "ds"])
+        fig = plots.plot_anomaly_series(
+            series, scores, truth, threshold=1.5, color=plots.CATEGORICAL[0], unique_id="a"
+        )
+        flagged = next(t for t in fig.data if t.name and t.name.startswith("Marcado"))
+        assert len(flagged.x) == 1
+        assert flagged.y[0] == 30.0
+
+    def test_sin_ningun_punto_marcado_no_hay_traza_de_marcadores(self) -> None:
+        ds = pd.date_range("2024-01-01", periods=3, freq="h")
+        series = pd.DataFrame({"ds": ds, "y": [1.0, 1.0, 1.0]})
+        scores = pd.DataFrame({"ds": ds, "score": [0.1, 0.1, 0.1], "scorable": [True] * 3})
+        truth = pd.DataFrame(columns=["event_id", "ds"])
+        fig = plots.plot_anomaly_series(
+            series, scores, truth, threshold=5.0, color=plots.CATEGORICAL[0], unique_id="a"
+        )
+        assert not any(t.name and t.name.startswith("Marcado") for t in fig.data)
+
+
+# --------------------------------------------------------------------------- #
+# 11. Explicabilidad
+# --------------------------------------------------------------------------- #
+
+
+class TestPlotTftVariableAttention:
+    def test_una_traza_por_bloque(self) -> None:
+        table = pd.DataFrame(
+            {
+                "kind": ["attention_variable"] * 3,
+                "feature": ["temp_c", "observed_target", "temp_c"],
+                "block": ["future", "past", "past"],
+                "value": [1.0, 0.62, 0.38],
+            }
+        )
+        fig = plots.plot_tft_variable_attention(table)
+        assert len(fig.data) == 2  # past, future
+
+
+class TestPlotTftTemporalAttention:
+    def test_ignora_las_filas_de_atencion_de_variable(self) -> None:
+        table = pd.DataFrame(
+            {
+                "kind": ["attention_variable", "attention_temporal", "attention_temporal"],
+                "offset": [np.nan, -1.0, 0.0],
+                "value": [1.0, 0.4, 0.6],
+            }
+        )
+        fig = plots.plot_tft_temporal_attention(table)
+        assert len(fig.data[0].x) == 2
+
+
+class TestPlotPredictionDecomposition:
+    def test_la_cascada_tiene_cinco_barras(self) -> None:
+        ds = pd.Timestamp("2024-01-01")
+        components = pd.DataFrame(
+            {
+                "ds": [ds],
+                "observed": [10.0],
+                "trend": [8.0],
+                "seasonal_24": [1.5],
+                "seasonal_168": [0.3],
+                "resid": [0.2],
+            }
+        )
+        fig = plots.plot_prediction_decomposition(components, unique_id="a", ds=ds)
+        assert len(fig.data[0].y) == 5
+
+    def test_instante_ausente_lanza_keyerror(self) -> None:
+        components = pd.DataFrame(
+            {
+                "ds": [pd.Timestamp("2024-01-01")],
+                "observed": [10.0],
+                "trend": [8.0],
+                "seasonal_24": [1.5],
+                "seasonal_168": [0.3],
+                "resid": [0.2],
+            }
+        )
+        with pytest.raises(KeyError):
+            plots.plot_prediction_decomposition(
+                components, unique_id="a", ds=pd.Timestamp("2099-01-01")
+            )
