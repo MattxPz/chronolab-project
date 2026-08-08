@@ -7,6 +7,7 @@ documento en ficcion.
 
 from __future__ import annotations
 
+import ast
 import importlib
 from pathlib import Path
 
@@ -78,20 +79,35 @@ MODULES = [
     "chronolab.viz",
     "chronolab.viz.plots",
     "chronolab.app",
-    "chronolab.app.main",
     "chronolab.app.components",
     "chronolab.api",
     "chronolab.api.service",
 ]
 
-# Las paginas de Streamlit se nombran por convencion del framework y no son
-# identificadores validos, asi que se comprueban como ficheros y no como modulos.
-STREAMLIT_PAGES = [
-    "1_overview.py",
-    "2_forecast.py",
-    "3_leaderboard.py",
-    "4_anomalies.py",
-    "5_explainability.py",
+# Los scripts de Streamlit se comprueban como ficheros, no importandolos, por
+# dos razones distintas:
+#
+# - Las paginas de `app/pages/` se nombran por convencion del framework
+#   (`1_overview.py`) y no son identificadores de modulo validos.
+# - `app/main.py` si lo es, pero importarlo **ejecuta la app entera**: en un
+#   entrypoint de Streamlit `st.set_page_config` y el cuerpo de la pagina corren
+#   al importar, que es como el framework espera que se escriba. Ademas
+#   `streamlit` vive en el extra `app`, que el job de CI de lint/typecheck/test
+#   no instala (ver `.github/workflows/ci.yml`).
+#
+# Parsear el fichero con `ast` comprueba exactamente lo mismo que el test de
+# modulos -que existe y que documenta su proposito- sin importar ni ejecutar
+# nada. Es deliberadamente distinto de un `pytest.importorskip("streamlit")`,
+# que es el patron del resto de la suite para los extras: aqui saltarse la
+# comprobacion dejaria el arbol de `app/` sin verificar precisamente en el
+# entorno donde CI la corre.
+STREAMLIT_SCRIPTS = [
+    "app/main.py",
+    "app/pages/1_overview.py",
+    "app/pages/2_forecast.py",
+    "app/pages/3_leaderboard.py",
+    "app/pages/4_anomalies.py",
+    "app/pages/5_explainability.py",
 ]
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "chronolab"
@@ -103,9 +119,12 @@ def test_el_modulo_existe_y_documenta_su_proposito(name: str) -> None:
     assert module.__doc__, f"{name} no tiene docstring de proposito"
 
 
-@pytest.mark.parametrize("page", STREAMLIT_PAGES)
-def test_la_pagina_de_streamlit_existe(page: str) -> None:
-    assert (PACKAGE_ROOT / "app" / "pages" / page).is_file()
+@pytest.mark.parametrize("relative_path", STREAMLIT_SCRIPTS)
+def test_el_script_de_streamlit_existe_y_documenta_su_proposito(relative_path: str) -> None:
+    path = PACKAGE_ROOT / relative_path
+    assert path.is_file(), f"falta {relative_path}"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assert ast.get_docstring(tree), f"{relative_path} no tiene docstring de proposito"
 
 
 def test_el_paquete_distribuye_tipos() -> None:
