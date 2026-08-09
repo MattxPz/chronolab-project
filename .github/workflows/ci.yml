@@ -49,8 +49,23 @@ jobs:
       - name: Typecheck (mypy --strict sobre src/)
         run: uv run mypy
 
+      # `-m "not slow and not network"` es el mismo filtro que `make test-fast`:
+      # sin los extras ml/deep instalados aqui, los adaptadores pesados ya se
+      # saltan solos via `pytest.importorskip`, pero filtrar por marca ademas
+      # evita que este job empiece a arrastrar los tests `slow` en cuanto la
+      # imagen tenga esos extras instalados por otro motivo.
       - name: Test
-        run: uv run pytest --cov --cov-report=term-missing
+        run: >
+          uv run pytest -m "not slow and not network"
+          --cov --cov-report=term-missing --cov-report=html
+
+      - name: Publicar informe de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14
 
   artifact-size:
     name: tamaño de reports/
