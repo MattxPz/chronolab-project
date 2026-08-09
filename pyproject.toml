@@ -65,6 +65,16 @@ app = [
     "streamlit>=1.36",
 ]
 
+# `chronolab.api.service` es, como `app`, solo lectura de artefactos
+# (docs/ARCHITECTURE.md §2.1: `api` no puede importar `models`, `evaluation` ni
+# `anomaly`). Extra separado en vez de anadir fastapi/uvicorn a `core` porque
+# no todo el mundo que instala el paquete quiere levantar un servidor HTTP, y
+# separado de `app` porque no comparten proceso ni motivo de despliegue.
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.100",

@@ -1,0 +1,70 @@
+# Levanta `chronolab.app` (Streamlit, puerto 8501) y `chronolab.api.service`
+# (FastAPI, puerto 8000) desde la misma imagen (ver Dockerfile). Ninguno de
+# los dos entrena ni recalcula nada (docs/ARCHITECTURE.md A5 y §2.1): `app`
+# lee `reports/results/` (el subconjunto demo versionado, horneado en la
+# imagen) y `api` lee `data/artifacts/live/` (lo que escribe
+# `scripts/refresh_data.py`).
+#
+# Este fichero **no** lanza el refresco: eso es
+# `.github/workflows/refresh-data.yml` en CI, o en local
+# `uv run --extra ml python scripts/refresh_data.py`, que por defecto
+# escribe en ``./data/artifacts/live`` -exactamente el directorio que el
+# servicio `api` monta abajo. Arranca la API sin haber corrido el refresco
+# ni una vez y `GET /health` respondera `"status": "unavailable"`, no un
+# error: es una respuesta valida, no un fallo del servicio.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chronolab:latest
+    command: ["uvicorn", "chronolab.api.service:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind mount de solo lectura: quien escribe aqui es
+      # scripts/refresh_data.py corriendo en el host (o en CI), nunca este
+      # contenedor -que ademas no tiene instalado el extra `ml` que ese
+      # script necesita.
+      - ./data/artifacts/live:/app/data/artifacts/live:ro
+    healthcheck:
+      test: [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chronolab:latest
+    command:
+      [
+        "streamlit",
+        "run",
+        "src/chronolab/app/main.py",
+        "--server.address=0.0.0.0",
+        "--server.port=8501",
+      ]
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test: [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://localhost:8501/_stcore/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

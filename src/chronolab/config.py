@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["AppSettings", "figures_dir", "get_settings", "results_dir"]
+__all__ = ["AppSettings", "figures_dir", "get_settings", "live_dir", "results_dir"]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 """``src/chronolab/config.py`` -> ``src/chronolab`` -> ``src`` -> raiz del repo."""
@@ -34,6 +34,13 @@ class AppSettings(BaseSettings):
         Directorio de figuras estaticas (PNG) precomputadas por las notebooks
         y los scripts de ``scripts/``, para el material que aun no tiene una
         version interactiva (docs/ARCHITECTURE.md A5: la app no las genera).
+    live_dir
+        Directorio de artefactos de la capa de casi tiempo real, escritos por
+        ``scripts/refresh_data.py`` y leidos por `chronolab.api.service`. A
+        diferencia de `results_dir` -el subconjunto demo, versionado- este es
+        un run completo que se sobrescribe cada refresco: vive bajo ``data/``
+        (docs/ARCHITECTURE.md §2, "artifacts (runs completos, gitignored)") y
+        `.gitignore` lo excluye con ``data/**``.
     demo_mode
         Si ``True``, la cabecera de la app avisa de que los artefactos son el
         subconjunto pequeno versionado en el repo, no un run completo.
@@ -43,6 +50,7 @@ class AppSettings(BaseSettings):
 
     results_dir: Path = _REPO_ROOT / "reports" / "results"
     figures_dir: Path = _REPO_ROOT / "reports" / "figures"
+    live_dir: Path = _REPO_ROOT / "data" / "artifacts" / "live"
     demo_mode: bool = True
 
 
@@ -78,3 +86,13 @@ def figures_dir() -> Path:
     pathlib.Path
     """
     return get_settings().figures_dir
+
+
+def live_dir() -> Path:
+    """Directorio de artefactos de casi tiempo real que escribe/lee el refresco.
+
+    Returns
+    -------
+    pathlib.Path
+    """
+    return get_settings().live_dir

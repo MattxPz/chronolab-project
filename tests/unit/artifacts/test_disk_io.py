@@ -138,3 +138,98 @@ class TestArtifactFilesUniveral:
         # `AttributeError` al llamar `state.load_<lo que sea>`.
         for name in reader.ARTIFACT_FILES:
             assert hasattr(reader, f"load_{name}"), f"falta reader.load_{name}"
+
+
+# --------------------------------------------------------------------------- #
+# Variante "live": lo que consume `chronolab.api.service`
+# --------------------------------------------------------------------------- #
+
+
+def _live_forecasts_frame() -> pd.DataFrame:
+    cutoff = pd.Timestamp("2024-08-07T00:00:00")
+    return pd.DataFrame(
+        {
+            "unique_id": ["ES"],
+            "model_id": ["MSTL"],
+            "window_id": [0],
+            "stage": ["holdout"],
+            "cutoff": [cutoff],
+            "ds": [cutoff + pd.Timedelta(hours=1)],
+            "h_step": [1],
+            "y": [100.0],
+            "y_hat": [101.0],
+        }
+    )
+
+
+class TestAvailableLiveArtifacts:
+    def test_ninguno_disponible_en_un_directorio_vacio(self, tmp_path: Path) -> None:
+        status = reader.available_live_artifacts(tmp_path)
+        assert set(status) == set(reader.LIVE_ARTIFACT_FILES)
+        assert not any(status.values())
+
+    def test_detecta_el_fichero_que_si_existe(self, tmp_path: Path) -> None:
+        _live_forecasts_frame().to_parquet(
+            tmp_path / reader.LIVE_ARTIFACT_FILES["forecasts"], index=False
+        )
+        status = reader.available_live_artifacts(tmp_path)
+        assert status["forecasts"] is True
+        assert status["anomaly_events"] is False
+
+
+class TestLoadLiveForecasts:
+    def test_lee_y_valida_un_forecast_bien_formado(self, tmp_path: Path) -> None:
+        _live_forecasts_frame().to_parquet(tmp_path / "forecasts.parquet", index=False)
+        loaded = reader.load_live_forecasts(live_dir=tmp_path)
+        assert loaded.loc[0, "model_id"] == "MSTL"
+
+    def test_fichero_ausente_lanza_artifact_not_found_con_mensaje_util(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ArtifactNotFound, match="refresh_data"):
+            reader.load_live_forecasts(live_dir=tmp_path)
+
+
+class TestLoadLiveAnomalyEvents:
+    def test_lee_y_valida_eventos_bien_formados(self, tmp_path: Path) -> None:
+        frame = pd.DataFrame(
+            {
+                "detector_id": ["conformal_MSTL"],
+                "unique_id": ["ES"],
+                "event_id": ["evt-0"],
+                "alpha": [0.05],
+                "start_ds": [pd.Timestamp("2024-08-07T02:00:00")],
+                "end_ds": [pd.Timestamp("2024-08-07T03:00:00")],
+                "n_points": [2],
+                "duration_steps": [2],
+                "peak_score": [1.8],
+                "peak_severity": [0.6],
+                "cum_severity": [1.0],
+                "peak_ds": [pd.Timestamp("2024-08-07T02:00:00")],
+                "direction": ["up"],
+            }
+        )
+        frame.to_parquet(tmp_path / "anomaly_events.parquet", index=False)
+        loaded = reader.load_live_anomaly_events(live_dir=tmp_path)
+        assert loaded.loc[0, "direction"] == "up"
+
+    def test_fichero_ausente_lanza_artifact_not_found(self, tmp_path: Path) -> None:
+        with pytest.raises(ArtifactNotFound):
+            reader.load_live_anomaly_events(live_dir=tmp_path)
+
+
+class TestLoadLiveManifest:
+    def test_lee_el_manifest_tal_cual(self, tmp_path: Path) -> None:
+        (tmp_path / "manifest.json").write_text('{"run_id": "abc", "alpha": 0.05}')
+        manifest = reader.load_live_manifest(live_dir=tmp_path)
+        assert manifest == {"run_id": "abc", "alpha": 0.05}
+
+    def test_ausente_lanza_artifact_not_found(self, tmp_path: Path) -> None:
+        with pytest.raises(ArtifactNotFound, match="refresh_data"):
+            reader.load_live_manifest(live_dir=tmp_path)
+
+
+class TestLiveArtifactFilesUniversal:
+    def test_cada_artefacto_de_live_artifact_files_tiene_un_load(self) -> None:
+        for name in reader.LIVE_ARTIFACT_FILES:
+            assert hasattr(reader, f"load_live_{name}"), f"falta reader.load_live_{name}"

@@ -29,6 +29,7 @@ import pandera.pandas as pa
 
 __all__ = [
     "SCHEMA_VERSION",
+    "anomaly_events_schema",
     "anomaly_results_schema",
     "anomaly_scores_schema",
     "anomaly_truth_schema",
@@ -131,6 +132,36 @@ def anomaly_truth_schema() -> pa.DataFrameSchema:
             "event_id": pa.Column(str, nullable=False),
             "anomaly_type": pa.Column(str, nullable=False),
             "severity": _FLOAT,
+        },
+        strict=False,
+        coerce=True,
+    )
+
+
+def anomaly_events_schema() -> pa.DataFrameSchema:
+    """Eventos colapsados de `chronolab.anomaly.events.aggregate_events`.
+
+    Mismas columnas que `chronolab.anomaly.events.EVENT_COLUMNS`. Lo produce
+    ``scripts/refresh_data.py`` (o un script de evaluacion futuro) llamando a
+    ``aggregate_events``; ``chronolab.api.service`` solo lo lee y filtra, sin
+    importar `chronolab.anomaly` (docs/ARCHITECTURE.md §2.1: `api` no puede
+    importar `anomaly`).
+    """
+    return pa.DataFrameSchema(
+        {
+            "detector_id": pa.Column(str, nullable=False),
+            "unique_id": _UNIQUE_ID,
+            "event_id": pa.Column(str, nullable=False),
+            "alpha": _FLOAT_REQUIRED,
+            "start_ds": _DS,
+            "end_ds": _DS,
+            "n_points": pa.Column(int, nullable=False, coerce=True),
+            "duration_steps": pa.Column(int, nullable=False, coerce=True),
+            "peak_score": _FLOAT_REQUIRED,
+            "peak_severity": _FLOAT,
+            "cum_severity": _FLOAT,
+            "peak_ds": _DS,
+            "direction": pa.Column(str, nullable=False),
         },
         strict=False,
         coerce=True,

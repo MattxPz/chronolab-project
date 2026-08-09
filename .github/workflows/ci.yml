@@ -32,11 +32,13 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      # Solo core + dev: es cuanto hace falta para lint, typecheck y tests del
-      # nucleo, y mantiene el job por debajo del minuto de instalacion.
-      # Los extras ml/deep se ejercitan en el job `smoke`.
-      - name: Install core + dev
-        run: uv sync
+      # Core + dev + api: `chronolab.api.service` importa fastapi a nivel de
+      # modulo, asi que mypy (que sigue imports de verdad, no solo los
+      # declarados) y `test_module_tree.py` necesitan tenerlo instalado. Los
+      # extras ml/deep no entran aqui -mantienen el job por debajo del minuto
+      # de instalacion- y se ejercitan en el job `smoke`.
+      - name: Install core + dev + api
+        run: uv sync --extra api
 
       - name: Lint (ruff check)
         run: uv run ruff check --output-format=github .

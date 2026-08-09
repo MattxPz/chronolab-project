@@ -16,14 +16,22 @@ Dos variantes conviven aqui:
   que `chronolab.app` toca un DataFrame (docs/ARCHITECTURE.md §2.1): la app no
   llama a `pandas.read_parquet` directamente en ningun sitio.
 
+Una tercera familia, `load_live_*` y `load_live_manifest`, lee del directorio
+de casi tiempo real (`chronolab.config.live_dir`, escrito por
+``scripts/refresh_data.py``) en vez de ``reports/results/``. Vive aqui y no en
+un modulo aparte por la misma razon que las otras dos: es la unica via por la
+que `chronolab.api.service` toca un DataFrame, sin importar `chronolab.anomaly`
+ni `chronolab.evaluation` (docs/ARCHITECTURE.md §2.1).
+
 Ninguna funcion de este modulo usa `st.cache_data`: el cacheo entre
 `rerun`s de Streamlit es responsabilidad de `chronolab.app.components.state`,
 que envuelve estas funciones. Mantenerlo fuera de aqui es lo que permite
 probar el lector con `pytest` sin arrancar Streamlit.
 """
 
+import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -31,6 +39,7 @@ import pandera.pandas as pa
 
 from chronolab.anomaly.protocols import ScoringFrame
 from chronolab.artifacts import schemas
+from chronolab.config import live_dir as _default_live_dir
 from chronolab.config import results_dir as _default_results_dir
 from chronolab.errors import ArtifactNotFound, PredictionContractError, WindowValidationError
 from chronolab.types import ModelId, Stage
@@ -43,8 +52,10 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = [
     "ARTIFACT_FILES",
+    "LIVE_ARTIFACT_FILES",
     "SCORING_FRAME_COLUMNS",
     "available_artifacts",
+    "available_live_artifacts",
     "load_anomaly_results",
     "load_anomaly_scores",
     "load_anomaly_truth",
@@ -52,6 +63,11 @@ __all__ = [
     "load_dm_matrix",
     "load_forecasts",
     "load_leaderboard",
+    "load_live_anomaly_events",
+    "load_live_anomaly_scores",
+    "load_live_forecasts",
+    "load_live_manifest",
+    "load_live_windows",
     "load_mstl_components",
     "load_panel",
     "load_quality_outliers",
@@ -388,3 +404,132 @@ def load_windows(*, results_dir: Path | None = None) -> pd.DataFrame:
 def load_dm_matrix(*, results_dir: Path | None = None) -> pd.DataFrame:
     """Contrastes de Diebold-Mariano por pareja de modelos del backtest demo."""
     return _read_table("dm_matrix", schemas.dm_matrix_schema(), results_dir=results_dir)
+
+
+# --------------------------------------------------------------------------- #
+# Lectura desde disco: la variante que consume `chronolab.api.service`
+# --------------------------------------------------------------------------- #
+
+LIVE_ARTIFACT_FILES: dict[str, str] = {
+    "forecasts": "forecasts.parquet",
+    "windows": "windows.parquet",
+    "anomaly_scores": "anomaly_scores.parquet",
+    "anomaly_events": "anomaly_events.parquet",
+}
+"""Nombre logico -> nombre de fichero en el directorio de casi tiempo real.
+
+Separado de `ARTIFACT_FILES`: vive en `chronolab.config.live_dir`
+(``data/artifacts/live/`` por defecto, excluido de git por ``data/**``), no en
+``reports/results/``, y lo escribe ``scripts/refresh_data.py`` en cada
+refresco en lugar de un hito versionado de una vez.
+"""
+
+
+def available_live_artifacts(live_dir: Path | None = None) -> dict[str, bool]:
+    """Que artefactos de `LIVE_ARTIFACT_FILES` existen, sin leerlos.
+
+    Parameters
+    ----------
+    live_dir
+        Directorio a inspeccionar. Por defecto, `chronolab.config.live_dir`.
+
+    Returns
+    -------
+    dict[str, bool]
+        ``nombre_logico -> existe``. La usa `GET /health` de
+        `chronolab.api.service` para reportar que endpoints puede atender sin
+        intentar leerlos y capturar la excepcion.
+    """
+    base = live_dir if live_dir is not None else _default_live_dir()
+    return {name: (base / filename).exists() for name, filename in LIVE_ARTIFACT_FILES.items()}
+
+
+def _read_live_table(
+    name: str, schema: pa.DataFrameSchema, *, live_dir: Path | None = None
+) -> pd.DataFrame:
+    """Lee y valida una tabla de `LIVE_ARTIFACT_FILES` por su nombre logico.
+
+    Parameters
+    ----------
+    name
+        Clave de `LIVE_ARTIFACT_FILES`.
+    schema
+        Esquema pandera contra el que validar (`.validate(frame, lazy=True)`).
+    live_dir
+        Directorio a leer. Por defecto, `chronolab.config.live_dir`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Tabla validada.
+
+    Raises
+    ------
+    ArtifactNotFound
+        Si el fichero no existe: el refresco no ha corrido todavia, o corrio
+        contra otro `live_dir`.
+    """
+    base = live_dir if live_dir is not None else _default_live_dir()
+    path = base / LIVE_ARTIFACT_FILES[name]
+    if not path.exists():
+        raise ArtifactNotFound(
+            f"falta el artefacto de casi tiempo real '{name}' ({path}). Se genera con "
+            f"`uv run --extra ml python scripts/refresh_data.py`."
+        )
+    frame = pd.read_parquet(path)
+    validated: pd.DataFrame = schema.validate(frame, lazy=True)
+    return validated
+
+
+def load_live_forecasts(*, live_dir: Path | None = None) -> pd.DataFrame:
+    """Predicciones del ultimo refresco, con intervalos. Fuente de `POST /forecast`."""
+    return _read_live_table("forecasts", schemas.forecasts_schema(), live_dir=live_dir)
+
+
+def load_live_windows(*, live_dir: Path | None = None) -> pd.DataFrame:
+    """Ventanas teseladas del ultimo refresco (calibracion + puntuacion)."""
+    return _read_live_table("windows", schemas.windows_schema(), live_dir=live_dir)
+
+
+def load_live_anomaly_scores(*, live_dir: Path | None = None) -> pd.DataFrame:
+    """Scores crudos del detector conformal sobre el tramo mas reciente."""
+    return _read_live_table("anomaly_scores", schemas.anomaly_scores_schema(), live_dir=live_dir)
+
+
+def load_live_anomaly_events(*, live_dir: Path | None = None) -> pd.DataFrame:
+    """Eventos de anomalia colapsados del ultimo refresco. Fuente de `POST /anomalies`."""
+    return _read_live_table("anomaly_events", schemas.anomaly_events_schema(), live_dir=live_dir)
+
+
+def load_live_manifest(*, live_dir: Path | None = None) -> dict[str, Any]:
+    """Manifest del ultimo refresco: cuando corrio, que fuentes uso, cuantas filas escribio.
+
+    Se escribe el ultimo dentro de ``scripts/refresh_data.py``, el mismo
+    convenio de atomicidad que docs/ARCHITECTURE.md §7.2 describe para
+    ``manifest.json``: mientras no existe, el refresco en curso se trata como
+    inexistente en lugar de a medio escribir.
+
+    Parameters
+    ----------
+    live_dir
+        Directorio a leer. Por defecto, `chronolab.config.live_dir`.
+
+    Returns
+    -------
+    dict[str, Any]
+        Documento JSON del manifest, deserializado tal cual.
+
+    Raises
+    ------
+    ArtifactNotFound
+        Si el refresco no ha corrido nunca contra ese `live_dir`.
+    """
+    base = live_dir if live_dir is not None else _default_live_dir()
+    path = base / "manifest.json"
+    if not path.exists():
+        raise ArtifactNotFound(
+            f"no hay ningun refresco todavia ({path}). Se genera con "
+            f"`uv run --extra ml python scripts/refresh_data.py`."
+        )
+    payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return payload

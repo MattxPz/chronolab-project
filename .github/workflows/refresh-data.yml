@@ -1,0 +1,67 @@
+name: Refresh data
+
+on:
+  schedule:
+    # Cada seis horas. UTC, como todo el resto del proyecto (invariante I2).
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # Sin cancel-in-progress: dos refrescos solapados escriben en el mismo
+  # `data/artifacts/live/` de forma atomica (fichero temporal + renombrado,
+  # manifest el ultimo -ver scripts/refresh_data.py), asi que no corrompen
+  # nada, pero encolarlos evita gastar dos veces la cuota de las APIs
+  # externas por un disparo manual que coincide con el cron.
+  group: refresh-data
+
+jobs:
+  refresh:
+    name: descarga · predice · detecta anomalias
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # IMPORTANTE: este job nunca escribe en el repositorio. No hay `git add`,
+    # `git commit` ni `git push` en ningun paso, y `permissions` se deja en
+    # solo lectura a proposito para que un paso que lo intentase por error
+    # falle de inmediato en lugar de colarse. Los artefactos del refresco
+    # (`data/artifacts/live/`, gitignorado) se publican como artifact de
+    # Actions, no como commit: el humano gestiona todo lo que entra en el
+    # repo (CLAUDE.md).
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      # `--extra ml`: el refresco ajusta MSTL (statsforecast) y calibra el
+      # detector conformal. No hace falta `deep` (nada de torch/neuralforecast
+      # en este script) ni `app`/`api`.
+      - name: Install core + dev + ml
+        run: uv sync --extra ml
+
+      - name: Ejecutar scripts/refresh_data.py
+        run: uv run --extra ml python scripts/refresh_data.py
+        env:
+          CHRONOLAB_REFRESH_LOG_LEVEL: INFO
+
+      - name: Subir data/artifacts/live/ como artifact de Actions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chronolab-live-${{ github.run_id }}
+          # `if-no-files-found: error`: si el script fallo antes de escribir
+          # nada, mejor que el job lo diga que subir un artifact vacio que
+          # parece exito.
+          path: data/artifacts/live/
+          if-no-files-found: error
+          retention-days: 14
