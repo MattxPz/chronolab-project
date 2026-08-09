@@ -283,8 +283,8 @@ verdad si el detector acierta **un solo** punto suyo:
 ```python
 adjusted = predicted.copy()
 for start, end in true_ranges:
-    if predicted[start:end+1].any():
-        adjusted[start:end+1] = True
+    if predicted[start : end + 1].any():
+        adjusted[start : end + 1] = True
 f1_pa = point_f1(adjusted, actual)
 ```
 
