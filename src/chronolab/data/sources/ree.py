@@ -28,15 +28,23 @@ __all__ = ["REEDemandSource"]
 _DEFAULT_BASE_URL = "https://apidatos.ree.es/es/datos/demanda/demanda-tiempo-real"
 _NATIVE_TZ = "Europe/Madrid"
 _UNIQUE_ID = "ES"
-_DEFAULT_MAX_WINDOW_DAYS = 30
+_DEFAULT_MAX_WINDOW_DAYS = 7
 """apidatos.ree.es limita el rango admitido por consulta; se pagina por debajo de eso.
 
-El limite no esta documentado por REE. Verificado empiricamente contra
-`demanda-tiempo-real` el 2026-08-11: una consulta de 30 dias responde 200,
-la misma consulta con 31 dias responde 400 ("Los datos solicitados no estan
-disponibles en este momento"). Con el valor previo (364) una ventana como
-`LOOKBACK_DAYS=45` (`scripts/refresh_data.py`) nunca activaba la paginacion y
-se enviaba sin trocear, lo que rompia el refresco programado."""
+El limite no esta documentado por REE, no es un simple tope de dias y no
+parece del todo determinista: verificado empiricamente el 2026-08-11 contra
+`demanda-tiempo-real`, una ventana de 30 dias responde 200 si termina cerca
+de "ahora", pero 400 ("Los datos solicitados no estan disponibles en este
+momento. Intentelo de nuevo mas tarde.") si termina apenas ~12-15 dias atras
+-mismo tamano, distinta antiguedad. El mensaje sugiere una limitacion de
+carga/timeout del backend al agregar rangos viejos, no una validacion de
+entrada dura. Ventanas de 7 dias respondieron 200 de forma consistente en
+todo un barrido de 45 dias hacia atras (los 7 tramos que produce un refresco
+con `LOOKBACK_DAYS=45` en `scripts/refresh_data.py`), asi que se usa como
+margen conservador en vez de perseguir el maximo exacto -que, si es
+load-dependent, puede variar entre corridas. Con el valor original (364)
+esa misma ventana de 45 dias nunca activaba la paginacion y se enviaba sin
+trocear, lo que rompia el refresco programado."""
 
 
 def _date_chunks(
@@ -65,6 +73,31 @@ def _empty_frame() -> pd.DataFrame:
     )
 
 
+def _resample_hourly(frame: pd.DataFrame) -> pd.DataFrame:
+    """Reduce telemetria cruda a la media horaria que promete `SourceSpec.freq`.
+
+    `demanda-tiempo-real` ignora `time_trunc=hour` en la practica: pedido o no,
+    siempre devuelve una muestra cada 5 minutos (verificado empiricamente el
+    2026-08-11 -ver `_DEFAULT_MAX_WINDOW_DAYS`). Se agrupa por `unique_id` y se
+    promedian los valores dentro de cada hora natural ``[HH:00, HH+1:00)``, la
+    definicion estandar de demanda horaria media en MW. Una hora sin ninguna
+    muestra cruda dentro del rango produce ``NaN``, un hueco de origen legitimo
+    para `chronolab.data.schemas.build_raw_schema` (``nullable=True``), no un
+    error de esta funcion.
+    """
+    if frame.empty:
+        return frame
+    # `groupby(...).resample(on=...)` alinea por posicion contra el indice
+    # de `frame`; si llega con huecos (tras un filtro booleano rio arriba,
+    # por ejemplo) revienta con un IndexError interno de pandas en vez de
+    # dar un resultado incorrecto. Se reindexa en limpio para no depender de
+    # que cada llamante recuerde resetearlo.
+    frame = frame.reset_index(drop=True)
+    hourly = frame.groupby("unique_id").resample("h", on="ds")["y"].mean().reset_index()
+    hourly["ds"] = hourly["ds"].astype("datetime64[ns]")
+    return hourly[["unique_id", "ds", "y"]]
+
+
 @dataclass(frozen=True, slots=True)
 class REEDemandSource:
     """`DataSource` para la demanda electrica en tiempo real de apidatos.ree.es.
@@ -75,15 +108,23 @@ class REEDemandSource:
             "included": [
                 {
                     "attributes": {
-                        "title": "Demanda real",
+                        "title": "Real",
                         "values": [
                             {"value": 24567.3, "datetime": "2019-08-01T00:00:00.000+02:00"},
+                            {"value": 24601.1, "datetime": "2019-08-01T00:05:00.000+02:00"},
                             ...,
                         ],
                     }
-                }
+                },
+                ...,
             ]
         }
+
+    ``included`` trae varias series a la vez (``"Real"``, ``"Prevista"``,
+    ``"Programada"``, ``"Programada total"``); se selecciona la de `series_title`.
+    El titulo es ``"Real"``, no ``"Demanda real"`` -verificado contra la API en
+    vivo el 2026-08-11, tras que el nombre intuitivo (y el de la documentacion
+    informal de REE) resultara ser incorrecto.
 
     Cada ``datetime`` trae su propio desplazamiento UTC explicito (``+01:00``
     en horario de invierno, ``+02:00`` en horario de verano): la conversion a
@@ -96,14 +137,19 @@ class REEDemandSource:
     rango de fechas**: parte ``[start, end)`` en tramos de a lo sumo
     `max_window_days` dias y concatena las respuestas.
 
+    Pese a `spec.freq` = ``"h"`` y a pedir siempre ``time_trunc=hour``, el
+    endpoint devuelve telemetria cada 5 minutos sin importar el parametro
+    (tambien verificado en vivo). `fetch` la reduce a la media horaria con
+    `_resample_hourly` antes de validar el esquema, para cumplir de verdad el
+    contrato que `spec` promete.
+
     Parameters
     ----------
     base_url
         URL del endpoint. Parametrizable para tests.
     series_title
         Titulo de la serie a extraer de ``included`` (el mismo endpoint puede
-        traer mas de una serie, por ejemplo "Demanda real" y
-        "Demanda programada").
+        traer mas de una serie, por ejemplo "Real" y "Programada").
     max_window_days
         Tamano maximo, en dias, de cada tramo de la paginacion.
     http_client
@@ -113,14 +159,15 @@ class REEDemandSource:
 
     Notes
     -----
-    Deduplicacion: ``policy="last"``. Si dos tramos de la paginacion se
+    Deduplicacion: ``policy="last"``, aplicada **antes** del remuestreo, sobre
+    las marcas de 5 minutos originales. Si dos tramos de la paginacion se
     solapan en un instante (por ejemplo tras un reintento parcial), se
     conserva la version mas reciente recibida, coherente con que la API puede
     revisar valores recientes.
     """
 
     base_url: str = _DEFAULT_BASE_URL
-    series_title: str = "Demanda real"
+    series_title: str = "Real"
     max_window_days: int = _DEFAULT_MAX_WINDOW_DAYS
     http_client: httpx.Client | None = None
     timeout: float = DEFAULT_TIMEOUT
@@ -168,7 +215,13 @@ class REEDemandSource:
 
         frame = pd.concat(frames, ignore_index=True) if frames else _empty_frame()
         frame = deduplicate(frame, policy="last")
+        # Recorta al rango pedido *antes* de remuestrear: el remuestreo
+        # rellena con NaN cada hora sin muestra cruda dentro de lo que le
+        # llega, y un tramo puede traer puntos justo fuera de `[start, end)`
+        # en su frontera. Recortar despues inflaria el hueco (o, peor, lo
+        # extenderia) mas alla de lo pedido.
         frame = frame[(frame["ds"] >= start) & (frame["ds"] < end)]
+        frame = _resample_hourly(frame)
         frame = frame.sort_values("ds").reset_index(drop=True)
 
         validated: pd.DataFrame = ree_demand_schema().validate(frame, lazy=True)

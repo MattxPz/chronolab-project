@@ -13,7 +13,7 @@ from chronolab.errors import SourceUnavailable, VintageNotSupported
 from chronolab.types import Role
 
 
-def _payload(values: list[dict[str, Any]], *, title: str = "Demanda real") -> dict[str, Any]:
+def _payload(values: list[dict[str, Any]], *, title: str = "Real") -> dict[str, Any]:
     return {"included": [{"attributes": {"title": title, "values": values}}]}
 
 
@@ -55,36 +55,48 @@ class TestParseo:
         ]
         assert result["y"].tolist() == [20000.0, 21000.0]
 
-    def test_verano_e_invierno_en_la_misma_respuesta_se_resuelven_cada_uno_con_su_offset(
-        self,
-    ) -> None:
-        # +01:00 (invierno) y +02:00 (verano) en la misma respuesta: cada
-        # marca trae su propio offset, sin ambiguedad que resolver.
-        payload = _payload(
-            [
-                {"value": 1.0, "datetime": "2024-01-15T00:00:00.000+01:00"},
-                {"value": 2.0, "datetime": "2024-07-15T00:00:00.000+02:00"},
-            ]
+    def test_verano_e_invierno_se_resuelven_cada_uno_con_su_offset(self) -> None:
+        # +01:00 (invierno) y +02:00 (verano): cada marca trae su propio
+        # offset, sin ambiguedad que resolver. Se piden en ventanas angostas
+        # y separadas (no una sola de enero a agosto) para que el resample
+        # horario no tenga que rellenar seis meses de NaN entre una y otra.
+        winter_source = _source(
+            _client_returning(
+                _payload([{"value": 1.0, "datetime": "2024-01-15T00:00:00.000+01:00"}])
+            )
         )
-        source = _source(_client_returning(payload))
-        result = source.fetch(start=pd.Timestamp("2024-01-01"), end=pd.Timestamp("2024-08-01"))
-        assert result["ds"].tolist() == [
-            pd.Timestamp("2024-01-14 23:00:00"),
-            pd.Timestamp("2024-07-14 22:00:00"),
-        ]
+        winter_result = winter_source.fetch(
+            start=pd.Timestamp("2024-01-14 23:00"), end=pd.Timestamp("2024-01-15 01:00")
+        )
+        assert winter_result["ds"].tolist() == [pd.Timestamp("2024-01-14 23:00:00")]
+        assert winter_result["y"].tolist() == [1.0]
+
+        summer_source = _source(
+            _client_returning(
+                _payload([{"value": 2.0, "datetime": "2024-07-15T00:00:00.000+02:00"}])
+            )
+        )
+        summer_result = summer_source.fetch(
+            start=pd.Timestamp("2024-07-14 21:00"), end=pd.Timestamp("2024-07-14 23:00")
+        )
+        assert summer_result["ds"].tolist() == [pd.Timestamp("2024-07-14 22:00:00")]
+        assert summer_result["y"].tolist() == [2.0]
 
     def test_selecciona_la_serie_por_titulo(self) -> None:
+        # La API real trae varias series a la vez bajo `included`
+        # ("Real", "Prevista", "Programada", "Programada total"); solo
+        # "Real" es la demanda observada que expone esta fuente.
         payload = {
             "included": [
                 {
                     "attributes": {
-                        "title": "Demanda programada",
+                        "title": "Programada",
                         "values": [{"value": 999.0, "datetime": "2024-01-01T00:00:00.000+01:00"}],
                     }
                 },
                 {
                     "attributes": {
-                        "title": "Demanda real",
+                        "title": "Real",
                         "values": [{"value": 111.0, "datetime": "2024-01-01T00:00:00.000+01:00"}],
                     }
                 },
@@ -99,6 +111,59 @@ class TestParseo:
         source = _source(_client_returning(payload))
         with pytest.raises(ValueError, match="no se encontro la serie"):
             source.fetch(start=pd.Timestamp("2024-01-01"), end=pd.Timestamp("2024-01-02"))
+
+
+class TestRemuestreoHorario:
+    """Resample a horario de la telemetria cruda de `demanda-tiempo-real`.
+
+    El endpoint ignora `time_trunc=hour` y devuelve telemetria cada 5 minutos
+    sin importar el parametro (verificado en vivo el 2026-08-11); `fetch` debe
+    reducirla a la media horaria que promete `spec.freq`.
+    """
+
+    def test_promedia_las_muestras_de_5_minutos_dentro_de_cada_hora(self) -> None:
+        payload = _payload(
+            [
+                {"value": 10.0, "datetime": "2024-01-01T00:00:00.000+01:00"},
+                {"value": 20.0, "datetime": "2024-01-01T00:05:00.000+01:00"},
+                {"value": 30.0, "datetime": "2024-01-01T00:10:00.000+01:00"},
+                {"value": 100.0, "datetime": "2024-01-01T01:00:00.000+01:00"},
+                {"value": 200.0, "datetime": "2024-01-01T01:05:00.000+01:00"},
+            ]
+        )
+        source = _source(_client_returning(payload))
+        result = source.fetch(
+            start=pd.Timestamp("2023-12-31 23:00"), end=pd.Timestamp("2024-01-02")
+        )
+        assert result["ds"].tolist() == [
+            pd.Timestamp("2023-12-31 23:00:00"),
+            pd.Timestamp("2024-01-01 00:00:00"),
+        ]
+        assert result["y"].tolist() == [20.0, 150.0]
+
+    def test_una_hora_sin_muestras_crudas_queda_como_nan_no_como_hueco_silencioso(self) -> None:
+        payload = _payload(
+            [
+                {"value": 10.0, "datetime": "2024-01-01T00:00:00.000+01:00"},
+                # 01:00 sin muestras: hueco real de origen.
+                {"value": 30.0, "datetime": "2024-01-01T02:00:00.000+01:00"},
+            ]
+        )
+        source = _source(_client_returning(payload))
+        result = source.fetch(
+            start=pd.Timestamp("2023-12-31 23:00"), end=pd.Timestamp("2024-01-02")
+        )
+        # 23:00 (10.0), 00:00 (hueco -> NaN), 01:00 (30.0): el resample no
+        # debe saltarse la hora intermedia solo porque el payload crudo la
+        # omite.
+        assert result["ds"].tolist() == [
+            pd.Timestamp("2023-12-31 23:00:00"),
+            pd.Timestamp("2024-01-01 00:00:00"),
+            pd.Timestamp("2024-01-01 01:00:00"),
+        ]
+        assert result["y"].iloc[0] == 10.0
+        assert pd.isna(result["y"].iloc[1])
+        assert result["y"].iloc[2] == 30.0
 
 
 class TestPaginacionPorRangoDeFechas:
@@ -121,7 +186,12 @@ class TestPaginacionPorRangoDeFechas:
         )
 
         assert len(received_start_dates) == 3  # tres tramos de 1 dia
-        assert result["y"].tolist() == [100.0, 200.0, 300.0]
+        # Cada tramo aporta un unico punto crudo, en Jan1/Jan2/Jan3 00:00; el
+        # resample rellena cada hora entre el primero y el ultimo dato real
+        # (49 = 2 dias completos + 1), sin perder ninguna en el camino. Las
+        # horas sin muestra propia quedan en NaN, un hueco de origen legitimo.
+        assert len(result) == 49
+        assert result.loc[result["y"].notna(), "y"].tolist() == [100.0, 200.0, 300.0]
         assert result["ds"].is_monotonic_increasing
 
     def test_un_rango_corto_no_se_pagina(self) -> None:
