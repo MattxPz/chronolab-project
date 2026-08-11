@@ -28,8 +28,15 @@ __all__ = ["REEDemandSource"]
 _DEFAULT_BASE_URL = "https://apidatos.ree.es/es/datos/demanda/demanda-tiempo-real"
 _NATIVE_TZ = "Europe/Madrid"
 _UNIQUE_ID = "ES"
-_DEFAULT_MAX_WINDOW_DAYS = 364
-"""apidatos.ree.es limita el rango admitido por consulta; se pagina por debajo de eso."""
+_DEFAULT_MAX_WINDOW_DAYS = 30
+"""apidatos.ree.es limita el rango admitido por consulta; se pagina por debajo de eso.
+
+El limite no esta documentado por REE. Verificado empiricamente contra
+`demanda-tiempo-real` el 2026-08-11: una consulta de 30 dias responde 200,
+la misma consulta con 31 dias responde 400 ("Los datos solicitados no estan
+disponibles en este momento"). Con el valor previo (364) una ventana como
+`LOOKBACK_DAYS=45` (`scripts/refresh_data.py`) nunca activaba la paginacion y
+se enviaba sin trocear, lo que rompia el refresco programado."""
 
 
 def _date_chunks(
